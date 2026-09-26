@@ -103,7 +103,7 @@ def upgrade() -> None:
         sa.Column("target", sa.String(length=256), nullable=False),
         sa.Column("pipeline_id", sa.UUID(), nullable=True),
         sa.Column("parent_run_id", sa.UUID(), nullable=True),
-        sa.Column("trigger", sa.String(length=32), nullable=False),
+        sa.Column("trigger", sa.String(length=256), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),

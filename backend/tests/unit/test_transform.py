@@ -249,7 +249,8 @@ def test_pipeline_orders_models_and_skips_downstream_of_failures(ctx: PlatformCo
     _model(ctx, "after_broken", "gold", "sql", "select * from {{ ref('broken') }}")
     _model(ctx, "no_input", "silver", "sql", "select * from {{ source('bronze', 'missing') }}")
     with ctx.metadata.session() as s:
-        p = Pipeline(name="p", models=["order_totals", "after_broken", "stg_orders", "broken", "no_input"])
+        # a long name: model runs record "pipeline:<name>" as their trigger
+        p = Pipeline(name="p" * 120, models=["order_totals", "after_broken", "stg_orders", "broken", "no_input"])
         s.add(p)
         s.flush()
         pid = p.id

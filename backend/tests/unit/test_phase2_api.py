@@ -109,7 +109,7 @@ def test_raw_vault_models_pipelines_and_lineage(client: TestClient, ctx: Platfor
     )
     g = client.get("/api/lineage/graph", headers=eng).json()
     layers = {n["layer"] for n in g["nodes"]}
-    assert {"source", "bronze", "vault", "silver", "gold", "report"} <= layers
+    assert {"source", "bronze", "vault", "silver", "gold", "serving", "report"} <= layers
     assert all(n.get("status") == "succeeded" for n in g["nodes"] if n["type"] == "job")
 
     dim = next(n for n in g["nodes"] if n["label"] == "dim_customer")

@@ -123,9 +123,9 @@ class StreamRunner(threading.Thread):
         self.error: str | None = None
         self._consumer: Consumer | None = None
         self._dlq: Producer | None = None
-        self._last_lineage = 0.0
+        self._last_lineage = float("-inf")  # first batch emits lineage right away
         self._last_profile = time.monotonic()
-        self._last_stats = 0.0
+        self._last_stats = float("-inf")
         self._schema_sig: tuple | None = None
         self._lineage_run = str(uuid.uuid4())
         self._key_columns: list[str] | None = None

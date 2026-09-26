@@ -70,7 +70,7 @@ test('the wizard builds a job from a table pick and preview, and the run lands i
 
   const dataset = page.getByRole('textbox', { name: 'Bronze dataset' });
   await dataset.fill(DATASET);
-  await expect(page.getByText('Phase 2').first()).toBeVisible();
+  await expect(page.getByText('Add to Raw Vault')).toBeVisible();
   await page.getByRole('button', { name: 'Next' }).click();
 
   await page.getByRole('textbox', { name: 'Job name' }).fill(JOB);

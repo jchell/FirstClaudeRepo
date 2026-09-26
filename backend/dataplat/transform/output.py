@@ -28,6 +28,9 @@ log = logging.getLogger(__name__)
 NAMESPACE = "dataplat"
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
+# Namespace of serving-DB replicas in lineage (dataset name: "<schema>.<table>").
+SERVING_SCHEME = "serving://"
+
 # column -> [(layer, dataset, column)]
 ColumnLineage = dict[str, list[tuple[str, str, str]]]
 
@@ -77,7 +80,7 @@ def tracked_run(
         run = TransformRun(
             kind=kind,
             target=target,
-            trigger=trigger,
+            trigger=trigger[:256],
             pipeline_id=pipeline_id,
             parent_run_id=parent_run_id,
             status="running",
@@ -119,7 +122,7 @@ def tracked_run(
         inputs = [ol_dataset(lake.get(layer, layer), name) for layer, name in dict.fromkeys(rc.inputs)]
         outputs = [
             ol_dataset(
-                lake[o.layer],
+                lake.get(o.layer) or f"{SERVING_SCHEME}{ctx.config.serving.database}",
                 o.name,
                 {
                     "columnLineage": {

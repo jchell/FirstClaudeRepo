@@ -74,6 +74,27 @@ def all_models(ctx: PlatformContext) -> dict[str, ModelSpec]:
         return {m.name: ModelSpec.of(m) for m in s.scalars(select(TransformModel))}
 
 
+def inputs(spec: ModelSpec, models: dict[str, ModelSpec]) -> list[str]:
+    """Every dataset ("<layer>.<name>") the model reads, models or not."""
+    layers = {n: m.layer for n, m in models.items()}
+    out: list[str] = []
+    try:
+        if spec.kind in ("sql", "fact"):
+            r = render(spec.sql, layers, incremental=False, this=(spec.layer, spec.name))
+            out += [f"{layer}.{name}" for layer, name in r.relations.values()]
+        if spec.kind == "fact":
+            out += [
+                f"{layers[d['dimension']]}.{d['dimension']}"
+                for d in spec.config.get("dimensions", [])
+                if d.get("dimension") in layers
+            ]
+        if spec.kind == "scd2_dimension":
+            out += [ref for ref in (spec.config.get("source"), spec.config.get("deletes_source")) if ref]
+    except TemplateError:
+        pass
+    return list(dict.fromkeys(out))
+
+
 def dependencies(spec: ModelSpec, models: dict[str, ModelSpec]) -> set[str]:
     """Names of the models ``spec`` reads."""
     by_table = {(m.layer, m.name): m.name for m in models.values()}
@@ -272,6 +293,15 @@ class ModelRunner:
             rc.details.update(mode=mode, sql=compiled.sql[:20000])
             if mdl.serves(spec.kind, spec.config) and tf.exists(uri):
                 rc.details["serving"] = self._serve(spec, table, compiled.incremental and bool(keys), keys)
+                # The replica is a lineage node of its own: gold table -> serving table.
+                rc.outputs.append(
+                    output.Output(
+                        "serving",
+                        f"{spec.layer}.{spec.name}",
+                        {c: [(spec.layer, spec.name, c)] for c in table.schema.names},
+                        rows=rc.details["serving"]["rows"],
+                    )
+                )
             run_id = rc.run_id
         queued = (
             notify_updated(

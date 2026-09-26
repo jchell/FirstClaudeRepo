@@ -19,7 +19,7 @@ from dataplat.core import audit
 from dataplat.core.context import PlatformContext
 from dataplat.core.ports.identity import Principal
 from dataplat.db.models import Dataset, Pipeline, Schedule, TransformModel, TransformModelVersion, TransformRun
-from dataplat.transform.runner import ModelError, ModelSpec, dependencies, model_order
+from dataplat.transform.runner import ModelError, ModelSpec, dependencies, inputs, model_order
 from dataplat.transform.service import DefinitionError, save_model, sync_pipeline_schedule
 
 router = APIRouter(prefix="/api/transform", tags=["transform"])
@@ -71,6 +71,7 @@ class ModelOut(BaseModel):
     enabled: bool
     owner: str | None
     depends_on: list[str]
+    inputs: list[str]
     used_by: list[str]
     dataset_id: uuid.UUID | None
     rows: int | None
@@ -107,6 +108,7 @@ def _model_out(s: Session, m: TransformModel, specs: dict[str, ModelSpec]) -> Mo
         enabled=m.enabled,
         owner=m.owner,
         depends_on=sorted(deps),
+        inputs=inputs(specs[m.name], specs) if m.name in specs else [],
         used_by=sorted(n for n, sp in specs.items() if m.name in dependencies(sp, specs)),
         dataset_id=ds.id if ds else None,
         rows=ds.row_count if ds else None,

@@ -596,7 +596,7 @@ class TransformRun(Base):
     target: Mapped[str] = mapped_column(String(256))
     pipeline_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("pipelines.id", ondelete="SET NULL"), index=True)
     parent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
-    trigger: Mapped[str] = mapped_column(String(32), default="manual")
+    trigger: Mapped[str] = mapped_column(String(256), default="manual")
     status: Mapped[str] = mapped_column(String(16), default="running")  # running|succeeded|failed|skipped
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -55,13 +55,15 @@ export const PAGES: NavPage[] = [
   },
   {
     path: '/pipelines',
+    ready: true,
     label: 'Pipelines',
     icon: IconRoute,
     phase: '2',
-    summary: 'SQL/Python models promoting data bronze → silver → gold, with incremental and streaming runs.',
+    summary: 'SQL models, SCD2 dimensions and facts promoting data bronze → silver → gold, incrementally and on every change.',
   },
   {
     path: '/data-vault',
+    ready: true,
     label: 'Data Vault',
     icon: IconBuildingWarehouse,
     phase: '2',
