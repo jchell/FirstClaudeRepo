@@ -177,10 +177,25 @@ def cdc_cleanup(ctx: PlatformContext, job: Job, secrets: SecretStore | None) -> 
 
     if job.payload.get("connection_type") != "postgres":
         return {"skipped": "nothing to clean up for this source type"}
+    import time
+
     slot = job.payload["slot"]
     c = get_connector_class("postgres")(job.payload["config"], secrets)
     try:
         with c.engine.connect() as conn:
+            # The connector's replication connection may still be closing right after the
+            # delete; wait for the slot to be released rather than skipping it.
+            deadline = time.monotonic() + 30
+            while True:
+                active = conn.execute(
+                    text("select active from pg_replication_slots where slot_name = :s"), {"s": slot}
+                ).scalar()
+                conn.commit()
+                if active is not True or time.monotonic() > deadline:
+                    break
+                time.sleep(1)
+            if active:
+                raise RuntimeError(f"replication slot {slot} is still in use; will retry")
             dropped = conn.execute(
                 text(
                     "select pg_drop_replication_slot(slot_name) from pg_replication_slots"
