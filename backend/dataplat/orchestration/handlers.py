@@ -53,3 +53,7 @@ def secret_probe(ctx: PlatformContext, job: Job, secrets: SecretStore | None) ->
     except PermissionError:
         return {"readable": False, "reason": "forbidden"}
     return {"readable": True, "length": len(value)}
+
+
+# Domain handlers register themselves on import.
+from dataplat.ingestion import handlers as _ingestion_handlers  # noqa: E402, F401

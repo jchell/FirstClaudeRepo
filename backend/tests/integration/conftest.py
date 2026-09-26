@@ -49,7 +49,8 @@ def api(admin_password: str) -> Iterator[httpx.Client]:
     except httpx.HTTPError:
         pytest.skip(f"platform API not reachable at {API}")
     with httpx.Client(base_url=API, timeout=30) as c:
-        r = c.post("/api/auth/login", json={"username": "admin", "password": admin_password})
+        user = os.environ.get("DATAPLAT_ADMIN_USER", "admin")
+        r = c.post("/api/auth/login", json={"username": user, "password": admin_password})
         r.raise_for_status()
         c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
         yield c

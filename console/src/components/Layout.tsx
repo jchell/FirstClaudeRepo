@@ -62,7 +62,7 @@ export function Layout() {
                 label={p.label}
                 leftSection={<p.icon size={18} stroke={1.6} />}
                 rightSection={
-                  p.phase !== '0' ? (
+                  !p.ready ? (
                     <Badge size="xs" variant="light" color="gray">
                       P{p.phase}
                     </Badge>

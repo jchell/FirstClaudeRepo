@@ -23,21 +23,23 @@ export interface NavPage {
   /** Build phase that delivers the page (docs/PLATFORM_PLAN.md). */
   phase: string;
   summary: string;
+  /** True once the page is built (otherwise it shows a "coming in Phase N" placeholder). */
+  ready?: boolean;
   /** Roles that see the page; empty means every signed-in user. */
   roles?: string[];
 }
 
 export const PAGES: NavPage[] = [
-  { path: '/', label: 'Home', icon: IconGauge, phase: '0', summary: 'Platform health and recent runs.' },
+  { path: '/', ready: true, label: 'Home', icon: IconGauge, phase: '0', summary: 'Platform health and recent runs.' },
   {
-    path: '/connections',
+    path: '/connections', ready: true,
     label: 'Connections',
     icon: IconPlugConnected,
     phase: '1',
     summary: 'Sources and targets: files (local, SMB, FTP, SFTP, object stores), databases, APIs and event streams.',
   },
   {
-    path: '/ingestion',
+    path: '/ingestion', ready: true,
     label: 'Ingestion Jobs',
     icon: IconDatabaseImport,
     phase: '1',
@@ -65,14 +67,14 @@ export const PAGES: NavPage[] = [
     summary: 'Design hubs, links and satellites (Data Vault 2.0), plus PIT and bridge tables.',
   },
   {
-    path: '/catalog',
+    path: '/catalog', ready: true,
     label: 'Catalog',
     icon: IconBook2,
     phase: '1',
     summary: 'Search datasets, columns, glossary terms, tags and classifications.',
   },
   {
-    path: '/lineage',
+    path: '/lineage', ready: true,
     label: 'Lineage',
     icon: IconHierarchy3,
     phase: '1',
@@ -107,14 +109,14 @@ export const PAGES: NavPage[] = [
     summary: 'Extracts, generated REST/GraphQL APIs and the serving database.',
   },
   {
-    path: '/portal',
+    path: '/portal', ready: true,
     label: 'App Portal',
     icon: IconApps,
     phase: '1',
     summary: 'Links to the reports, dashboards and business apps built on the platform.',
   },
   {
-    path: '/admin',
+    path: '/admin', ready: true,
     label: 'Admin',
     icon: IconUsersGroup,
     phase: '0',

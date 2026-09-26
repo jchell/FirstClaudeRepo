@@ -26,6 +26,10 @@ log = logging.getLogger(__name__)
 
 NAMESPACE = "dataplat"
 
+# Kinds that emit their own, richer lineage (ingestion) or move no data (source
+# checks); a generic START/COMPLETE for them would only clutter the graph.
+NO_GENERIC_LINEAGE = {"ingestion.run", "connection.test", "connection.discover", "connection.preview"}
+
 
 class _ForbiddenAsPermissionError(VaultSecretStore):
     def resolve(self, ref):  # type: ignore[override]
@@ -61,7 +65,9 @@ class Worker:
         handler = HANDLERS.get(job.kind)
         ev_start = run_event("START", NAMESPACE, job.kind, run_facets={"job_id": {"id": job.id}})
         run_id = ev_start["run"]["runId"]
-        self._emit(ev_start)
+        emit = job.kind not in NO_GENERIC_LINEAGE
+        if emit:
+            self._emit(ev_start)
         try:
             if handler is None:
                 raise LookupError(f"no handler for job kind {job.kind!r}")
@@ -71,10 +77,12 @@ class Worker:
             err = redact(f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=5)}")
             log.warning("job %s (%s) failed: %s", job.id, job.kind, err.splitlines()[0])
             self.ctx.jobs.fail(job.id, err)
-            self._emit(run_event("FAIL", NAMESPACE, job.kind, run_id=run_id))
+            if emit:
+                self._emit(run_event("FAIL", NAMESPACE, job.kind, run_id=run_id))
             return True
         self.ctx.jobs.complete(job.id, result)
-        self._emit(run_event("COMPLETE", NAMESPACE, job.kind, run_id=run_id))
+        if emit:
+            self._emit(run_event("COMPLETE", NAMESPACE, job.kind, run_id=run_id))
         log.info("job %s (%s) succeeded", job.id, job.kind)
         return True
 

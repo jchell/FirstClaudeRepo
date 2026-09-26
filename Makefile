@@ -15,7 +15,9 @@ endif
 INFRA := postgres minio vault redpanda oxigraph
 COMPOSE := docker compose
 
-.PHONY: init up down vault unseal migrate test test-integration lint logs reset
+DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
+
+.PHONY: init up down vault unseal migrate test test-integration lint logs reset dev-up seed
 
 init:
 	mkdir -p $(DATAPLAT_HOME)
@@ -44,7 +46,16 @@ migrate:
 	$(COMPOSE) run --rm api migrate
 
 down:
-	$(COMPOSE) down
+	$(DEV) down
+
+# Test sources for development (Postgres, MySQL, MongoDB, SFTP, FTP, SMB, S3, REST mock),
+# seeded with sample data. Add MSSQL=1 for SQL Server (~2 GB RAM).
+dev-up: up
+	$(DEV) $(if $(MSSQL),--profile mssql) up -d --wait --no-build
+	$(DEV) run --rm -T seed $(if $(MSSQL),landing postgres mysql mongo sftp ftp smb s3 kafka mssql)
+
+seed:
+	$(DEV) run --rm -T seed
 
 logs:
 	$(COMPOSE) logs -f --tail 100
@@ -61,6 +72,6 @@ lint:
 
 reset:
 	@read -p "This deletes ALL platform data and $(DATAPLAT_HOME). Type 'reset' to continue: " a && [ "$$a" = reset ]
-	$(COMPOSE) --profile full --profile tools down -v
+	$(DEV) --profile full --profile tools --profile mssql down -v
 	docker run --rm -v $(DATAPLAT_HOME):/h alpine sh -c 'rm -rf /h/*' || true
 	rm -rf $(DATAPLAT_HOME)

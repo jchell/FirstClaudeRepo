@@ -7,8 +7,9 @@ phases listed there.
 | Phase | Status |
 |---|---|
 | 0 — Foundations | ✅ done |
-| 1 — Ingestion MVP | next |
-| 1b, 2, 3, 3b, 4, 5 | planned |
+| 1 — Ingestion MVP | ✅ done |
+| 1b — Near-real-time | next |
+| 2, 3, 3b, 4, 5 | planned |
 
 ## Quick start (Windows)
 
@@ -34,14 +35,76 @@ Then open the console at http://localhost:3000 and sign in as `admin` with the p
 | MinIO console | http://localhost:9001 |
 | Vault UI | http://localhost:8200 |
 
+## Ingesting data (Phase 1)
+
+1. **Admin → Service accounts:** create one, e.g. `etl`. It owns the credentials of the
+   connections you give it.
+2. **Connections:** add a source. Supported types:
+   - files: local folder, SFTP, FTP/FTPS, SMB share, S3/MinIO;
+   - databases: PostgreSQL, MySQL, SQL Server, Oracle;
+   - MongoDB;
+   - REST API: bearer, basic, API key or OAuth2 client credentials, with page, offset,
+     cursor, next-URL or Link-header pagination;
+   - Kafka topics.
+
+   Passwords and keys go straight to Vault; **Save and test** checks the connection from the
+   worker, running as the service account.
+3. **Ingestion Jobs → New:** the wizard walks through:
+   1. pick the connection;
+   2. choose a table, SQL query, file template (e.g. `/in/orders_{yyyyMMdd}*.csv`),
+      collection, endpoint or topic, and preview it;
+   3. choose a load mode: full, incremental on a watermark column (new files only for file
+      sources), or append;
+   4. name the bronze dataset and set a schedule (cron or interval);
+   5. save, or save and run.
+
+Every run:
+- writes a Delta table at `s3://bronze/<dataset>` with `_load_ts`, `_source`, `_batch_id` and
+  `_file` audit columns;
+- registers the table in the **Catalog**, where schema changes are tracked;
+- profiles every column;
+- records lineage for the **Lineage Explorer**, including the files it read and their SHA-256;
+- publishes a run event on the `dataplat.runs` topic;
+- shows up on the **Home** ops dashboard.
+
+The **App Portal** lists reports and apps. Naming the datasets an app reads puts the app into
+lineage.
+
+### Test sources
+
+`make dev-up` (Windows: `tasks.ps1 dev-up`) starts sample sources next to the platform and
+seeds them:
+
+| Source | Host | Credentials |
+|---|---|---|
+| Postgres | `src-postgres` | `dev` / `devsource` |
+| MySQL | `src-mysql` | `dev` / `devsource` |
+| MongoDB | `src-mongo` | `dev` / `devsource` |
+| SFTP | `src-sftp` | `dev` / `devsource` |
+| FTP | `src-ftp` | `dev` / `devsource` |
+| SMB | `src-smb` (share `landing`) | `dev` / `devsource` |
+| S3 | `src-s3` | `devsource` / `devsource-secret` |
+| REST API | `http://mock-api:8090` | see `samples/mock_api.py` |
+| Kafka topic | `web.clickstream` | none |
+| SQL Server (optional) | `src-mssql` | `sa` / `Dev-Source-2026`; add `MSSQL=1` / `-Mssql` (~2 GB RAM) |
+
+These are throwaway local test systems, so their credentials are public.
+
+The "Local folder" connection type reads `samples/landing` (or `DATAPLAT_LANDING`), which is
+mounted read-only into the worker at `/data/landing`.
+
 ## Layout
 
 ```
 config/platform.yaml   picks one adapter per port — swapping infrastructure is a config change
 backend/dataplat/
-  core/ports/          abstract interfaces (ObjectStore, QueryEngine, SecretStore, EventBus, ...)
-  adapters/            local adapters: Vault, Postgres, MinIO, DuckDB, Redpanda, Oxigraph, lineage
-  api/                 FastAPI app (auth, admin, jobs, health, lineage)
+  core/ports/          abstract interfaces (ObjectStore, QueryEngine, TableFormat, SecretStore, EventBus, ...)
+  adapters/            local adapters: Vault, Postgres, MinIO, DuckDB, Delta Lake, Redpanda, Oxigraph, lineage
+  connectors/          connector SDK + file, database, MongoDB, REST and Kafka connectors
+  ingestion/           job spec, runner (source -> bronze Delta), worker handlers
+  catalog/, quality/   catalog registration + schema drift, column profiler
+  lineage/             OpenLineage events and the lineage graph
+  api/                 FastAPI app (auth, admin, connections, ingestion, catalog, lineage, ops, portal)
   security/            passwords, login/refresh/lockout, service accounts
   orchestration/       job handlers, worker, scheduler, stream worker
   bootstrap/           Vault init/unseal/configure, per-service policies
@@ -49,6 +112,8 @@ backend/dataplat/
 console/               React + TypeScript + Vite + Mantine console
 infra/                 Vault server config, Postgres init SQL
 scripts/               tasks.ps1 (Windows), e2e.sh (from-scratch validation)
+samples/               seed script, REST mock API, local landing folder
+docker-compose.dev.yml test sources
 ```
 
 ## Security model
@@ -105,3 +170,13 @@ The integration suite checks the plan's Phase 0 guarantees against the live stac
   with CDC in Phase 1b.
 - **DuckDB's `httpfs` extension** ships in the image as a pip wheel instead of being downloaded
   at runtime.
+- **Connection secrets** live under the owning service account's Vault path
+  (`kv/dataplat/service-accounts/<sa>/connections/<id>`), not `kv/dataplat/connections/<id>`.
+  That way the account's policy covers them and no per-connection policy is needed.
+- **Source tasks run on the worker.** "Test connection", table browsing and previews run as
+  short worker jobs, because the API is not allowed to read connection secrets. A preview's
+  rows are handed out once and then removed from the metadata database.
+- **Ingestion writes each batch in a single Delta commit, built in memory.** That is fine for
+  laptop-sized loads. Streaming very large sources in chunks comes with Phase 1b.
+- **Oracle** is implemented but not covered by the test suite, since there's no free Oracle
+  image in the dev profile. Every other connector is tested against a real server.

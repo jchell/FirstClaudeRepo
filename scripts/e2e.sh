@@ -10,6 +10,8 @@ cd "$(dirname "$0")/.."
 
 export DATAPLAT_HOME="${DATAPLAT_HOME:-$HOME/.dataplat}"
 export COMPOSE_PROFILES="${COMPOSE_PROFILES-full}"
+# The platform plus the dev test sources (Postgres, MySQL, MongoDB, SFTP, FTP, SMB, S3, REST mock).
+export COMPOSE_FILE="$PWD/docker-compose.yml:$PWD/docker-compose.dev.yml"
 
 if [ -e "$DATAPLAT_HOME/vault-init.json" ] || [ -e "$DATAPLAT_HOME/vault-init.dpapi" ]; then
   echo "DATAPLAT_HOME=$DATAPLAT_HOME already holds a platform; point it elsewhere or run 'make reset'." >&2
@@ -25,6 +27,7 @@ docker compose run --rm -T api migrate
 DATAPLAT_ADMIN_PASSWORD="$(docker compose run --rm -T api create-admin --username admin | tail -n 1)"
 export DATAPLAT_ADMIN_PASSWORD
 docker compose up -d --wait --no-build
+docker compose run --rm -T seed
 
 (cd backend && uv run --extra dev pytest -q -m integration)
 (cd console && npx playwright test --reporter=line)
