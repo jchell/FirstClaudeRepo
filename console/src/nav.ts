@@ -92,13 +92,15 @@ export const PAGES: NavPage[] = [
   },
   {
     path: '/quality',
+    ready: true,
     label: 'Data Quality',
     icon: IconChecklist,
     phase: '3',
-    summary: 'Profiles, steward rules, scorecards and degradation alerts.',
+    summary: 'Steward rules, scorecards with trends, and degradation alerts.',
   },
   {
     path: '/governance',
+    ready: true,
     label: 'Governance',
     icon: IconShieldLock,
     phase: '3',
@@ -133,4 +135,6 @@ export const ADMIN_TABS = [
   { path: '/admin/groups', label: 'Groups' },
   { path: '/admin/service-accounts', label: 'Service accounts & secrets' },
   { path: '/admin/audit', label: 'Audit log' },
+  { path: '/admin/vault-audit', label: 'Vault access' },
+  { path: '/admin/notifications', label: 'Notifications' },
 ];

@@ -314,7 +314,7 @@ function NodeDetails({
       api<DatasetColumns>(
         `/api/lineage/columns?${new URLSearchParams({ dataset: n.id, ...(asOf ? { as_of: new Date(asOf).toISOString() } : {}) })}`,
       ),
-    enabled: n.type === 'dataset',
+    enabled: n.type === 'dataset' && !n.restricted,
   });
   return (
     <Paper withBorder p="sm" w={340}>
@@ -328,7 +328,22 @@ function NodeDetails({
             {n.label}
           </Text>
           {n.namespace && <Code>{n.namespace}</Code>}
+          {n.restricted && (
+            <Alert color="gray" p="xs">
+              You don’t have access to this dataset; only its place in the flow is shown.
+            </Alert>
+          )}
           {n.row_count != null && <Text size="sm">{fmtNumber(n.row_count)} rows</Text>}
+          {!!n.tags?.length && (
+            <Group gap={4}>
+              {n.tags.map((t) => (
+                <Badge key={t} size="xs" variant="light" color="grape">
+                  {t}
+                </Badge>
+              ))}
+            </Group>
+          )}
+          {n.dq_score != null && <Text size="sm">Data quality score {n.dq_score.toFixed(1)}</Text>}
           {n.last_loaded_at && <Text size="sm">Loaded {fmtTime(n.last_loaded_at)}</Text>}
           {n.last_run && <Text size="sm">Last run {fmtTime(n.last_run)}</Text>}
           {n.alert && (
@@ -361,7 +376,7 @@ function NodeDetails({
               </Code>
             </>
           )}
-          {n.type !== 'job' && (
+          {n.type !== 'job' && !n.restricted && (
             <Button size="xs" variant="light" leftSection={<IconTargetArrow size={14} />} onClick={() => onImpact(n.id, n.label)}>
               Impact analysis
             </Button>

@@ -55,3 +55,20 @@ def require_roles(*roles: str) -> Callable[[Principal], Principal]:
 
 def client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
+
+
+def get_policy(
+    s: Session = Depends(get_session, scope="function"), principal: Principal = Depends(current_principal)
+):  # -> PolicyEngine
+    """Data access policies for the caller (grants, masking, row filters)."""
+    from dataplat.security.policy import PolicyEngine
+
+    return PolicyEngine(s, principal)
+
+
+def task_principal(p: Principal) -> dict[str, object]:
+    """Payload fields that make a worker task act for (and belong to) the caller."""
+    return {
+        "principal": {"id": p.id, "name": p.name, "kind": p.kind, "roles": sorted(p.roles)},
+        "requested_by": p.name,
+    }

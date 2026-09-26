@@ -21,12 +21,18 @@ def service_policies(cfg: PlatformConfig) -> dict[str, str]:
         + f'path "{kv}/data/{pre}/service-accounts/*" {{ capabilities = ["create", "update"] }}\n'
         + f'path "{kv}/metadata/{pre}/connections/*" {{ capabilities = ["read", "list", "delete"] }}\n'
         + f'path "{kv}/metadata/{pre}/service-accounts/*" {{ capabilities = ["read", "list", "delete"] }}\n'
+        # notification channel secrets (webhook URLs, tokens): write-only for the API
+        + f'path "{kv}/data/{pre}/notifications/*" {{ capabilities = ["create", "update"] }}\n'
+        + f'path "{kv}/metadata/{pre}/notifications/*" {{ capabilities = ["delete"] }}\n'
         + f'path "{transit}/sign/{jwt}" {{ capabilities = ["update"] }}\n'
         + f'path "{transit}/keys/{jwt}" {{ capabilities = ["read"] }}\n'
         + 'path "sys/policies/acl/sa-*" { capabilities = ["create", "update", "delete"] }\n',
         # Workers: no access to service-account or connection secrets of their own;
         # each job brings a single-use token scoped to its service account.
-        "dataplat-worker": db_creds + platform_read,
+        # ... except the platform's own notification channels, which only workers send to.
+        "dataplat-worker": db_creds
+        + platform_read
+        + f'path "{kv}/data/{pre}/notifications/*" {{ capabilities = ["read"] }}\n',
         "dataplat-stream-worker": db_creds + platform_read,
         # Scheduler: the only service that can mint service-account job tokens.
         "dataplat-scheduler": db_creds

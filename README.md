@@ -10,8 +10,9 @@ phases listed there.
 | 1 — Ingestion MVP | ✅ done |
 | 1b — Near-real-time | ✅ done |
 | 2 — Vault & Transform | ✅ done |
-| 3 — Quality & Governance | next |
-| 3b, 4, 5 | planned |
+| 3 — Quality & Governance | ✅ done |
+| 3b — Ontology & Knowledge Graph | next |
+| 4, 5 | planned |
 
 ## Quick start (Windows)
 
@@ -154,6 +155,54 @@ How it works:
     rows.
   - Live overlays mark failed jobs, late datasets and stream lag.
 
+## Data quality and governance (Phase 3)
+
+- **Data quality rules.** Stewards (and engineers) define rules on catalog datasets:
+  not null, unique, range, regex, allowed values, referential (the values exist in
+  another dataset), freshness, row count, and custom SQL (a `SELECT` over `data` that
+  returns the failing rows).
+  - Each run stores checked and failed rows, a score (0–100) and a few failing values,
+    as a time series.
+  - Rules belong to a DQ dimension (completeness, uniqueness, validity, consistency,
+    timeliness, accuracy).
+  - A rule can also run after every load of its dataset, including streaming
+    micro-batches.
+- **Scorecards** group rules. They run on a cron or interval schedule, or on demand,
+  and chart their score against a rolling baseline. A scorecard falling more than N%
+  below its baseline opens a `dq_degradation` alert. A failing critical rule opens
+  `dq_failed`.
+- **Classification.** A scan after each load suggests PII classifications (`pii.email`,
+  `pii.phone`, `pii.name`, and so on) from three sources:
+  - column names;
+  - value patterns in the latest profile, e.g. "100% of values look like emails";
+  - lineage: a column computed from a classified column.
+
+  Stewards accept or reject each suggestion on the Governance page or on the dataset
+  itself. There are also free tags and a business glossary linked to datasets and
+  columns.
+- **Access control.** Datasets get a business domain. A grant on a dataset, or on its
+  domain, makes it restricted: only the granted roles and users (plus admins and
+  stewards) can read it. It disappears from the catalog for everyone else and shows as
+  an anonymous placeholder in lineage.
+- **Masking and row filters.** A masking policy masks every column carrying its tag
+  (or a sub-tag: `pii` covers `pii.email`) for all roles except the exempt ones.
+  Methods:
+  - redact;
+  - partial (keeps the last 4 characters);
+  - keyed hash (stable and joinable, not reversible; the key is in Vault);
+  - null.
+
+  Row filters show non-exempt users only the rows matching a condition. Both apply
+  wherever a person reads data: catalog previews, profiles, DQ failing samples, the new
+  query API (`POST /api/query`, the dataset's *Query* tab) and model previews. Pipelines
+  themselves read raw data.
+- **Alerts** (stale datasets, failed streams, DQ) go to notification channels:
+  - webhooks, whose URL and token are kept in Vault;
+  - email through SMTP (the dev profile runs Mailpit at http://127.0.0.1:8025).
+- **Audit.** Previews, queries, classification decisions and policy changes are in the
+  audit log. *Admin → Vault access* shows Vault's own audit log: which service or job
+  token read or wrote which secret path, without values.
+
 ### Test sources
 
 `make dev-up` (Windows: `tasks.ps1 dev-up`) starts sample sources next to the platform and
@@ -188,11 +237,12 @@ backend/dataplat/
   ingestion/           job spec, runner (source -> bronze Delta), worker handlers
   vault/               Data Vault 2.0 definitions, hashing, SQL generation, insert-only loader, PIT/bridge
   transform/           SQL templating, sandbox, SCD2/fact/date builders, model + pipeline runner, triggers
-  catalog/, quality/   catalog registration + schema drift, column profiler
+  catalog/             catalog registration + schema drift, classification suggestions
   lineage/             OpenLineage events, table + column lineage graph, trace, impact, batch trace
+  quality/             profiler, DQ rule engine, scorecards
+  security/            passwords, login/refresh/lockout, service accounts, data access policies
   api/                 FastAPI app (auth, admin, connections, ingestion, streams, vault, transform,
                        catalog, lineage, ops, portal)
-  security/            passwords, login/refresh/lockout, service accounts
   orchestration/       job handlers, worker, scheduler, stream worker
   bootstrap/           Vault init/unseal/configure, per-service policies
   db/, alembic/        metadata schema and migrations
@@ -283,7 +333,15 @@ The integration suite checks the plan's Phase 0 guarantees against the live stac
   set of rows for a key.
 - **Surrogate keys** are MD5 hashes of the business key and `valid_from` (text), not
   integers, so they stay stable when a dimension is rebuilt.
-- **Lineage access control** (hiding nodes a user may not see) arrives with the Phase 3
-  permission model. Today every signed-in user sees the whole graph.
+- **Interactive reads under masking or row filters are computed in memory.** They're
+  capped at 2 million rows per table. Unrestricted reads stream straight from Delta.
+- **Hash masking** shows the first 16 hex characters of SHA-256 over a secret key plus
+  the value. The key is kept in Vault (`kv/dataplat/platform/masking`). Rotating it
+  changes every hashed value.
+- **Engineers are subject to masking too.** Model previews read inputs under the
+  builder's own policies. Model *builds* run as the platform and see raw data, as
+  pipelines must.
+- **Classification scans of streams** run every 10 minutes (scheduler), not after every
+  micro-batch.
 - **Oracle** is implemented but not covered by the test suite, since there's no free Oracle
   image in the dev profile. Every other connector is tested against a real server.

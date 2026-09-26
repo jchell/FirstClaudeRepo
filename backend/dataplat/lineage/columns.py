@@ -86,6 +86,20 @@ def build_column_graph(s: Session, lake: dict[str, str], as_of: datetime | None 
     }
 
 
+def column_upstream(s: Session, lake: dict[str, str]) -> dict[tuple[str, str, str], list[tuple[str, str, str]]]:
+    """(layer, dataset, column) -> the lake columns it is directly computed from."""
+    g = build_column_graph(s, lake)
+    nodes = {n["id"]: n for n in g["nodes"]}
+    out: dict[tuple[str, str, str], list[tuple[str, str, str]]] = {}
+    for e in g["edges"]:
+        src, dst = nodes[e["source"]], nodes[e["target"]]
+        if src["layer"] in lake and dst["layer"] in lake:
+            out.setdefault((dst["layer"], dst["dataset"], dst["label"]), []).append(
+                (src["layer"], src["dataset"], src["label"])
+            )
+    return out
+
+
 def walk(
     graph: dict[str, Any], start: set[str], direction: Literal["upstream", "downstream"], depth: int = 50
 ) -> set[str]:
@@ -235,3 +249,86 @@ def batch_trace(s: Session, tables: Any, lake: dict[str, str], batch_id: str) ->
             found.append({"dataset": f"{ds.layer}.{ds.name}", "layer": ds.layer, "rows": n, "dataset_id": str(ds.id)})
     apps = [a.name for a in s.scalars(select(PortalApp)) if set(a.datasets or []) & {f["dataset"] for f in found}]
     return {"batch_id": batch_id, "origin": origin, "datasets": found, "apps": apps}
+
+
+# ------------------------------------------------------------------ access control
+
+
+def _placeholder(node_id: str) -> str:
+    import hashlib
+
+    return "restricted:" + hashlib.sha1(node_id.encode()).hexdigest()[:12]
+
+
+def restricted_nodes(graph: dict[str, Any], hidden_dataset_ids: set[str]) -> set[str]:
+    """Dataset node ids (table graph) backed by datasets the viewer may not read."""
+    return {n["id"] for n in graph["nodes"] if n.get("type") == "dataset" and n.get("dataset_id") in hidden_dataset_ids}
+
+
+def mask_graph(graph: dict[str, Any], hidden: set[str]) -> dict[str, Any]:
+    """Replaces restricted dataset (and column) nodes with anonymous placeholders.
+
+    ``hidden`` holds table-level dataset node ids; column nodes belonging to them are
+    masked too. Edges are kept, so paths through a restricted dataset stay visible.
+    """
+    if not hidden:
+        return graph
+    remap: dict[str, str] = {}
+    nodes = []
+    for n in graph["nodes"]:
+        owner = n["id"] if n.get("type") == "dataset" else n.get("dataset_node")
+        if owner in hidden:
+            new_id = _placeholder(n["id"])
+            remap[n["id"]] = new_id
+            nodes.append(
+                {
+                    "id": new_id,
+                    "type": n["type"],
+                    "label": "restricted" if n.get("type") == "column" else "Restricted dataset",
+                    "layer": n.get("layer"),
+                    "restricted": True,
+                    **(
+                        {"dataset": "restricted", "dataset_node": _placeholder(owner)}
+                        if n.get("type") == "column"
+                        else {}
+                    ),
+                }
+            )
+        else:
+            nodes.append(n)
+    out = {**graph, "nodes": nodes}
+    out["edges"] = [
+        {**e, "source": remap.get(e["source"], e["source"]), "target": remap.get(e["target"], e["target"])}
+        for e in graph["edges"]
+    ]
+    if "steps" in graph:
+        out["steps"] = [
+            {**st, "from": remap.get(st["from"], st["from"]), "to": remap.get(st["to"], st["to"])}
+            for st in graph["steps"]
+        ]
+    return out
+
+
+def annotate_governance(s: Session, graph: dict[str, Any]) -> dict[str, Any]:
+    """Adds active tags and the DQ score to dataset nodes (for the node details panel)."""
+    import uuid as _uuid
+
+    from dataplat.db.models import TagAssignment
+    from dataplat.quality.summary import dataset_dq
+
+    ids = [n["dataset_id"] for n in graph["nodes"] if n.get("type") == "dataset" and n.get("dataset_id")]
+    if not ids:
+        return graph
+    tags: dict[str, set[str]] = {}
+    for a in s.scalars(
+        select(TagAssignment).where(
+            TagAssignment.dataset_id.in_([_uuid.UUID(i) for i in ids]), TagAssignment.status == "active"
+        )
+    ):
+        tags.setdefault(str(a.dataset_id), set()).add(a.tag)
+    for n in graph["nodes"]:
+        if n.get("dataset_id"):
+            n["tags"] = sorted(tags.get(n["dataset_id"], ()))
+            dq = dataset_dq(s, _uuid.UUID(n["dataset_id"]))
+            n["dq_score"] = dq["score"] if dq else None
+    return graph

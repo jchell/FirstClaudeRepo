@@ -287,7 +287,7 @@ def test_new_data_triggers_vault_loads_and_pipelines(customers: PlatformContext)
     assert notify_updated(ctx, ["vault.sat_customer_details"])["pipelines"] == ["dims"]
     with ctx.metadata.session() as s:
         kinds = sorted(j.kind for j in s.scalars(select(JobRow)))
-    assert kinds == ["pipeline.run", "vault.load"]
+    assert kinds == ["governance.classify", "pipeline.run", "vault.load"]
     # Once a load starts, a new trigger may queue a follow-up (changes mid-run aren't lost).
     job = ctx.jobs.claim("w", ["vault.load"])
     assert job is not None

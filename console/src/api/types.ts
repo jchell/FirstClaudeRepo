@@ -230,7 +230,10 @@ export interface Dataset {
   last_loaded_at: string | null;
   source_job_id: string | null;
   freshness_sla_minutes: number | null;
+  domain: string | null;
   columns: number;
+  /** Access is limited to granted roles/users. */
+  restricted: boolean;
 }
 
 export interface ColumnProfile {
@@ -263,6 +266,12 @@ export interface DatasetDetail extends Dataset {
   schema_changes: { ts: string; run_id: string | null; changes: { change: string; column: string; type?: string; from?: string; to?: string }[] }[];
   profile: { ts: string; row_count: number; columns: ColumnProfile[] } | null;
   source_job: string | null;
+  tags: { id: number; tag: string; column: string | null; status: 'active' | 'suggested'; source: string; confidence: number | null; reason: string }[];
+  glossary: { term_id: string; name: string; column: string | null; status: string }[];
+  /** Columns masked for the current user, and how. */
+  masked_columns: Record<string, string>;
+  row_filtered: boolean;
+  dq: { score: number | null; dimensions: Record<string, number>; rules: number; failing: number; unevaluated: number } | null;
 }
 
 export interface LineageNode {
@@ -284,6 +293,9 @@ export interface LineageNode {
   alert?: string;
   lag?: number | null;
   latency_p95_ms?: number | null;
+  tags?: string[];
+  dq_score?: number | null;
+  restricted?: boolean;
 }
 
 export interface LineageGraph {
@@ -546,4 +558,162 @@ export interface ModelPreview {
   rows?: Record<string, unknown>[];
   lineage?: Record<string, string[]>;
   dependencies?: string[];
+}
+
+// ---------------------------------------------------------------- Phase 3: quality & governance
+
+export type RuleType =
+  | 'not_null'
+  | 'unique'
+  | 'range'
+  | 'regex'
+  | 'allowed_values'
+  | 'referential'
+  | 'freshness'
+  | 'row_count'
+  | 'custom_sql';
+
+export interface DqResultInfo {
+  ts: string;
+  run_id: string;
+  trigger: string;
+  rows_checked: number;
+  rows_failed: number;
+  score: number | null;
+  passed: boolean | null;
+  error: string | null;
+  sample: unknown[];
+}
+
+export interface DqRuleInfo {
+  id: string;
+  name: string;
+  dataset_id: string;
+  dataset: string;
+  column: string | null;
+  rule_type: RuleType;
+  params: Json;
+  dimension: string;
+  severity: 'warning' | 'critical';
+  threshold: number;
+  run_on_load: boolean;
+  enabled: boolean;
+  description: string;
+  owner: string | null;
+  last: DqResultInfo | null;
+}
+
+export interface Scorecard {
+  id: string;
+  name: string;
+  description: string;
+  rule_ids: string[];
+  rules: DqRuleInfo[];
+  schedule: { type: 'none' | 'cron' | 'interval'; cron?: string; interval_seconds?: number };
+  next_run_at: string | null;
+  degradation_pct: number;
+  baseline_runs: number;
+  owner: string | null;
+  score: number | null;
+  baseline: number | null;
+  degraded: boolean;
+  dimensions: Record<string, number>;
+  last_run_at: string | null;
+  history?: { ts: string; score: number | null; baseline: number | null; degraded: boolean; dimensions: Record<string, number> }[];
+}
+
+export interface DqSummary {
+  rules: number;
+  passing: number;
+  failing: number;
+  unevaluated: number;
+  alerts: { id: number; kind: string; severity: string; target: string; message: string; opened_at: string }[];
+}
+
+export interface TagInfo {
+  name: string;
+  category: 'general' | 'classification';
+  description: string;
+  uses: number;
+  masking_policy: string | null;
+  builtin: boolean;
+}
+
+export interface TagAssignmentInfo {
+  id: number;
+  tag: string;
+  dataset_id: string;
+  dataset: string | null;
+  column: string | null;
+  status: 'active' | 'suggested' | 'rejected';
+  source: string;
+  confidence: number | null;
+  reason: string;
+  assigned_by: string | null;
+  updated_at: string;
+}
+
+export interface GlossaryTermInfo {
+  id: string;
+  name: string;
+  definition: string;
+  synonyms: string[];
+  domain: string | null;
+  owner: string | null;
+  status: 'draft' | 'approved' | 'deprecated';
+  links: { dataset_id: string; dataset: string; column: string | null }[];
+  updated_at: string;
+}
+
+export interface AccessGrantInfo {
+  id: number;
+  target_type: 'dataset' | 'domain';
+  target: string;
+  target_name: string;
+  principal_type: 'role' | 'user';
+  principal: string;
+  created_by: string | null;
+}
+
+export interface MaskingPolicyInfo {
+  id: string;
+  name: string;
+  tag: string;
+  method: 'redact' | 'partial' | 'hash' | 'null';
+  exempt_roles: string[];
+  description: string;
+  enabled: boolean;
+}
+
+export interface RowFilterInfo {
+  id: string;
+  name: string;
+  dataset_id: string;
+  dataset: string | null;
+  predicate: string;
+  exempt_roles: string[];
+  description: string;
+  enabled: boolean;
+}
+
+export interface NotificationChannelInfo {
+  id: string;
+  name: string;
+  type: 'webhook' | 'email';
+  recipients: string[];
+  kinds: string[];
+  min_severity: 'warning' | 'serious' | 'critical';
+  enabled: boolean;
+  secret_fields: string[];
+  last_sent_at: string | null;
+  last_error: string | null;
+}
+
+export interface QueryResult {
+  ok: boolean;
+  error?: string;
+  columns?: { name: string; type: string }[];
+  rows?: Record<string, unknown>[];
+  truncated?: boolean;
+  datasets?: string[];
 }

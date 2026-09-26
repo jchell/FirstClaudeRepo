@@ -13,7 +13,15 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dataplat.api.deps import client_ip, current_principal, get_ctx, get_session, require_roles
+from dataplat.api.deps import (
+    client_ip,
+    current_principal,
+    get_ctx,
+    get_policy,
+    get_session,
+    require_roles,
+    task_principal,
+)
 from dataplat.catalog import service as catalog
 from dataplat.core import audit
 from dataplat.core.context import PlatformContext
@@ -22,13 +30,26 @@ from dataplat.db.models import (
     Dataset,
     DatasetColumn,
     DatasetProfile,
+    GlossaryLink,
+    GlossaryTerm,
     IngestionJob,
     IngestionRun,
     PortalApp,
     SchemaChange,
+    TagAssignment,
 )
-from dataplat.lineage.columns import annotate_status, batch_trace, build_column_graph, impact, trace
+from dataplat.lineage.columns import (
+    annotate_governance,
+    annotate_status,
+    batch_trace,
+    build_column_graph,
+    impact,
+    mask_graph,
+    trace,
+)
 from dataplat.lineage.graph import build_graph, subgraph
+from dataplat.quality.summary import dataset_dq
+from dataplat.security.policy import PolicyEngine, mask_profile, read_secured
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -51,7 +72,9 @@ class DatasetOut(BaseModel):
     last_loaded_at: datetime | None
     source_job_id: uuid.UUID | None
     freshness_sla_minutes: int | None = None
+    domain: str | None = None
     columns: int = 0
+    restricted: bool = False
 
 
 class ColumnOut(BaseModel):
@@ -69,10 +92,17 @@ class DatasetDetail(DatasetOut):
     schema_changes: list[dict[str, Any]]
     profile: dict[str, Any] | None
     source_job: str | None
+    # governance: tags (active and suggested), glossary terms, and what this caller sees
+    tags: list[dict[str, Any]] = []
+    glossary: list[dict[str, Any]] = []
+    masked_columns: dict[str, str] = {}
+    row_filtered: bool = False
+    dq: dict[str, Any] | None = None
 
 
-def _ds_out(s: Session, d: Dataset) -> DatasetOut:
+def _ds_out(s: Session, d: Dataset, policy: PolicyEngine | None = None) -> DatasetOut:
     out = DatasetOut.model_validate(d, from_attributes=True)
+    out.restricted = policy.restricted(d) if policy else False
     out.columns = s.scalar(
         select(func.count()).where(DatasetColumn.dataset_id == d.id, DatasetColumn.removed_at.is_(None))
     )
@@ -84,20 +114,27 @@ def search_datasets(
     q: str | None = None,
     layer: str | None = None,
     s: Session = Depends(get_session, scope="function"),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ):
-    return [_ds_out(s, d) for d in catalog.search(s, q, layer)]
+    readable = policy.readable_ids()
+    return [_ds_out(s, d, policy) for d in catalog.search(s, q, layer) if readable is None or d.id in readable]
+
+
+def _readable(s: Session, policy: PolicyEngine, dataset_id: uuid.UUID) -> Dataset:
+    d = s.get(Dataset, dataset_id)
+    if d is None or not policy.can_read(d):
+        raise HTTPException(404, "dataset not found")  # restricted datasets aren't revealed
+    return d
 
 
 @router.get("/catalog/datasets/{dataset_id}", response_model=DatasetDetail)
 def dataset_detail(
     dataset_id: uuid.UUID,
     s: Session = Depends(get_session, scope="function"),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ):
-    d = s.get(Dataset, dataset_id)
-    if d is None:
-        raise HTTPException(404, "dataset not found")
+    d = _readable(s, policy, dataset_id)
+    pol = policy.for_dataset(d)
     cols = s.scalars(select(DatasetColumn).where(DatasetColumn.dataset_id == d.id).order_by(DatasetColumn.ordinal))
     changes = s.scalars(
         select(SchemaChange).where(SchemaChange.dataset_id == d.id).order_by(SchemaChange.ts.desc()).limit(50)
@@ -106,13 +143,44 @@ def dataset_detail(
         select(DatasetProfile).where(DatasetProfile.dataset_id == d.id).order_by(DatasetProfile.ts.desc())
     ).first()
     job = s.get(IngestionJob, d.source_job_id) if d.source_job_id else None
-    base = _ds_out(s, d).model_dump()
+    base = _ds_out(s, d, policy).model_dump()
+    tags = [
+        {
+            "id": a.id,
+            "tag": a.tag,
+            "column": a.column or None,
+            "status": a.status,
+            "source": a.source,
+            "confidence": a.confidence,
+            "reason": a.reason,
+        }
+        for a in s.scalars(
+            select(TagAssignment)
+            .where(TagAssignment.dataset_id == d.id, TagAssignment.status != "rejected")
+            .order_by(TagAssignment.column, TagAssignment.tag)
+        )
+    ]
+    terms = [
+        {"term_id": t.id, "name": t.name, "column": link.column or None, "status": t.status}
+        for link, t in s.execute(
+            select(GlossaryLink, GlossaryTerm)
+            .join(GlossaryTerm, GlossaryTerm.id == GlossaryLink.term_id)
+            .where(GlossaryLink.dataset_id == d.id)
+        )
+    ]
     return DatasetDetail(
         **base,
         column_list=[ColumnOut.model_validate(c, from_attributes=True) for c in cols],
         schema_changes=[{"ts": c.ts, "run_id": c.run_id, "changes": c.changes} for c in changes],
-        profile={"ts": prof.ts, "row_count": prof.row_count, "columns": prof.columns} if prof else None,
+        profile=(
+            {"ts": prof.ts, "row_count": prof.row_count, "columns": mask_profile(prof.columns, pol)} if prof else None
+        ),
         source_job=job.name if job else None,
+        tags=tags,
+        glossary=terms,
+        masked_columns=pol.masks,
+        row_filtered=bool(pol.row_filters),
+        dq=dataset_dq(s, d.id),
     )
 
 
@@ -121,6 +189,7 @@ class DatasetPatch(BaseModel):
     # Minutes; 0 removes the SLA.
     freshness_sla_minutes: int | None = Field(default=None, ge=0, le=60 * 24 * 90)
     owner: str | None = None
+    domain: str | None = Field(default=None, max_length=128)
     column_descriptions: dict[str, str] = {}
 
 
@@ -139,6 +208,10 @@ def update_dataset(
         d.description = body.description
     if body.owner is not None:
         d.owner = body.owner
+    if body.domain is not None:
+        if body.domain != d.domain and not actor.has_role("steward"):
+            raise HTTPException(403, "only stewards change domains (they drive access grants)")
+        d.domain = body.domain or None
     if body.freshness_sla_minutes is not None:
         d.freshness_sla_minutes = body.freshness_sla_minutes or None
     for name, desc in body.column_descriptions.items():
@@ -158,13 +231,21 @@ def preview_dataset(
     s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(require_roles("engineer", "analyst", "steward")),
+    policy: PolicyEngine = Depends(get_policy),
 ) -> dict[str, Any]:
-    d = s.get(Dataset, dataset_id)
-    if d is None:
-        raise HTTPException(404, "dataset not found")
-    table = ctx.tables.read(d.uri, limit=min(max(limit, 1), 500))
-    audit.record(s, actor=actor.name, action="dataset.preview", target=f"{d.layer}.{d.name}")
+    d = _readable(s, policy, dataset_id)
+    pol = policy.for_dataset(d)
+    table = read_secured(ctx, policy, d, limit=min(max(limit, 1), 500))
+    audit.record(
+        s,
+        actor=actor.name,
+        action="dataset.preview",
+        target=f"{d.layer}.{d.name}",
+        detail={"masked": sorted(pol.masks), "row_filtered": bool(pol.row_filters), "rows": table.num_rows},
+    )
     return {
+        "masked_columns": pol.masks,
+        "row_filtered": bool(pol.row_filters),
         "columns": [{"name": f.name, "type": str(f.type)} for f in table.schema],
         "rows": [{k: _jsonable(v) for k, v in r.items()} for r in table.to_pylist()],
     }
@@ -175,8 +256,9 @@ def profile_history(
     dataset_id: uuid.UUID,
     limit: int = 30,
     s: Session = Depends(get_session, scope="function"),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ) -> list[dict[str, Any]]:
+    _readable(s, policy, dataset_id)
     rows = s.scalars(
         select(DatasetProfile)
         .where(DatasetProfile.dataset_id == dataset_id)
@@ -192,6 +274,33 @@ def _jsonable(v: Any) -> Any:
     return str(v)
 
 
+class QueryIn(BaseModel):
+    sql: str = Field(min_length=1, max_length=50_000)
+    limit: int = Field(default=500, ge=1, le=5000)
+
+
+@router.post("/query", status_code=202)
+def query(
+    body: QueryIn,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
+    actor: Principal = Depends(require_roles("engineer", "analyst", "steward")),
+) -> dict[str, Any]:
+    """Runs a SELECT over lake tables on a worker, under the caller's data policies.
+
+    Reference tables as in models: {{ source('gold', 'dim_customer') }}, {{ ref('model') }},
+    {{ vault('hub_customer') }}. Poll /api/tasks/{task_id} for the result (handed out once).
+    """
+    task = ctx.jobs.enqueue(
+        "data.query", {"sql": body.sql, "limit": body.limit, **task_principal(actor)}, max_attempts=1
+    )
+    audit.record(
+        s, actor=actor.name, action="data.query", target=None, detail={"sql": body.sql[:2000]}, ip=client_ip(request)
+    )
+    return {"task_id": task, "kind": "data.query", "status": "queued"}
+
+
 # ---------------------------------------------------------------- lineage
 
 
@@ -203,15 +312,36 @@ def lineage_graph(
     as_of: datetime | None = None,
     s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ) -> dict[str, Any]:
     lake = ctx.config.lake.model_dump()
     g = build_graph(s, lake, as_of)
+    hidden = _hidden(g, policy)
     if node:
-        if not any(n["id"] == node for n in g["nodes"]):
+        if node in hidden or not any(n["id"] == node for n in g["nodes"]):
             raise HTTPException(404, "node not in the lineage graph")
         g = subgraph(g, node, direction, min(max(depth, 1), 50))
-    return annotate_status(s, g) if as_of is None else g
+    g = annotate_status(s, g) if as_of is None else g
+    return mask_graph(annotate_governance(s, g), hidden)
+
+
+def _hidden(table_graph: dict[str, Any], policy: PolicyEngine) -> set[str]:
+    """Dataset nodes the caller may not read: shown as anonymous placeholders."""
+    readable = policy.readable_ids()
+    if readable is None:
+        return set()
+    ids = {str(i) for i in readable}
+    return {
+        n["id"]
+        for n in table_graph["nodes"]
+        if n.get("type") == "dataset" and n.get("dataset_id") and n["dataset_id"] not in ids
+    }
+
+
+def _hidden_now(s: Session, ctx: PlatformContext, policy: PolicyEngine, as_of: datetime | None = None) -> set[str]:
+    if policy.readable_ids() is None:
+        return set()
+    return _hidden(build_graph(s, ctx.config.lake.model_dump(), as_of), policy)
 
 
 @router.get("/lineage/columns")
@@ -220,11 +350,14 @@ def lineage_columns(
     as_of: datetime | None = None,
     s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ) -> dict[str, Any]:
     """Column nodes of a dataset node, with their direct upstream/downstream columns."""
-    g = build_column_graph(s, ctx.config.lake.model_dump(), as_of)
-    cols = [n for n in g["nodes"] if n["dataset_node"] == dataset]
+    hidden = _hidden_now(s, ctx, policy, as_of)
+    if dataset in hidden:
+        raise HTTPException(404, "node not in the lineage graph")
+    g = mask_graph(build_column_graph(s, ctx.config.lake.model_dump(), as_of), hidden)
+    cols = [n for n in g["nodes"] if n.get("dataset_node") == dataset]
     ids = {n["id"] for n in cols}
     return {
         "columns": cols,
@@ -240,13 +373,15 @@ def lineage_trace(
     as_of: datetime | None = None,
     s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ) -> dict[str, Any]:
     """How does this column get its value (upstream), or where does it flow (downstream)?"""
+    hidden = _hidden_now(s, ctx, policy, as_of)
     g = build_column_graph(s, ctx.config.lake.model_dump(), as_of)
-    if not any(n["id"] == column for n in g["nodes"]):
+    target = next((n for n in g["nodes"] if n["id"] == column), None)
+    if target is None or target["dataset_node"] in hidden:
         raise HTTPException(404, "column not in the lineage graph")
-    return trace(g, column, direction)
+    return mask_graph(trace(g, column, direction), hidden)
 
 
 @router.get("/lineage/impact")
@@ -254,16 +389,28 @@ def lineage_impact(
     node: str,
     s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ) -> dict[str, Any]:
     """What is affected if this source/table/column changes or fails."""
     lake = ctx.config.lake.model_dump()
     tg = annotate_status(s, build_graph(s, lake))
     cg = build_column_graph(s, lake)
+    hidden = _hidden(tg, policy)
+    col = next((n for n in cg["nodes"] if n["id"] == node), None)
+    if node in hidden or (col is not None and col["dataset_node"] in hidden):
+        raise HTTPException(404, "node not in the lineage graph")
     known = {n["id"] for n in tg["nodes"]} | {n["id"] for n in cg["nodes"]}
     if node not in known:
         raise HTTPException(404, "node not in the lineage graph")
-    return impact(tg, cg, node)
+    result = impact(tg, cg, node)
+    if hidden:
+        hidden_cols = {(n["dataset"], n["label"]) for n in cg["nodes"] if n["dataset_node"] in hidden}
+        result["affected"] = [
+            {**a, "id": "restricted", "name": "Restricted dataset"} if a["id"] in hidden else a
+            for a in result["affected"]
+        ]
+        result["columns"] = [c for c in result["columns"] if tuple(c) not in hidden_cols]
+    return result
 
 
 @router.get("/lineage/batch/{batch_id}")
@@ -271,11 +418,22 @@ def lineage_batch(
     batch_id: str,
     s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
-    _: Principal = Depends(current_principal),
+    policy: PolicyEngine = Depends(get_policy),
 ) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{32}", batch_id):
         raise HTTPException(422, "batch ids are 32 hex characters")
-    return batch_trace(s, ctx.tables, ctx.config.lake.model_dump(), batch_id)
+    result = batch_trace(s, ctx.tables, ctx.config.lake.model_dump(), batch_id)
+    readable = policy.readable_ids()
+    if readable is not None:
+        ids = {str(i) for i in readable}
+        result["datasets"] = [d for d in result["datasets"] if d["dataset_id"] in ids]
+        origin = result.get("origin")
+        if origin and origin.get("target"):
+            layer, _, name = origin["target"].partition(".")
+            ds = s.scalars(select(Dataset).where(Dataset.layer == layer, Dataset.name == name)).first()
+            if ds is not None and str(ds.id) not in ids:
+                result["origin"] = {"restricted": True, "status": origin["status"]}
+    return result
 
 
 # ---------------------------------------------------------------- ops dashboard

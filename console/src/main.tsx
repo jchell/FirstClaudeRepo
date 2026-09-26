@@ -26,6 +26,8 @@ import { StreamsPage } from './pages/streams/StreamsPage';
 const LineagePage = lazy(() => import('./pages/lineage/LineagePage').then((m) => ({ default: m.LineagePage })));
 const DataVaultPage = lazy(() => import('./pages/vault/DataVaultPage').then((m) => ({ default: m.DataVaultPage })));
 const PipelinesPage = lazy(() => import('./pages/pipelines/PipelinesPage').then((m) => ({ default: m.PipelinesPage })));
+const QualityPage = lazy(() => import('./pages/quality/QualityPage').then((m) => ({ default: m.QualityPage })));
+const GovernancePage = lazy(() => import('./pages/governance/GovernancePage').then((m) => ({ default: m.GovernancePage })));
 const ModelEditor = lazy(() => import('./pages/pipelines/PipelinesPage').then((m) => ({ default: m.ModelEditor })));
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 5_000 } } });
@@ -67,6 +69,8 @@ createRoot(document.getElementById('root')!).render(
                 <Route path="streams" element={<StreamsPage />} />
                 <Route path="data-vault" element={<Suspense fallback={null}><DataVaultPage /></Suspense>} />
                 <Route path="pipelines" element={<Suspense fallback={null}><PipelinesPage /></Suspense>} />
+                <Route path="quality" element={<Suspense fallback={null}><QualityPage /></Suspense>} />
+                <Route path="governance" element={<Suspense fallback={null}><GovernancePage /></Suspense>} />
                 <Route path="pipelines/models/:name" element={<Suspense fallback={null}><ModelEditor /></Suspense>} />
                 {PAGES.filter((p) => !p.ready).map((p) => (
                   <Route key={p.path} path={p.path.slice(1)} element={<PlaceholderPage page={p} />} />

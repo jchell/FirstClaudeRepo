@@ -352,6 +352,8 @@ class Dataset(Base):
     last_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Freshness SLA: alert when the dataset hasn't been loaded for this long.
     freshness_sla_minutes: Mapped[int | None] = mapped_column(Integer)
+    # Business domain (e.g. "sales"); access grants can target a whole domain.
+    domain: Mapped[str | None] = mapped_column(String(128), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -606,3 +608,216 @@ class TransformRun(Base):
     lineage_run_id: Mapped[str | None] = mapped_column(String(64))
     details: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+# ================================================================ Phase 3: quality & governance
+
+
+class Tag(Base):
+    """A tag or classification (category "classification", e.g. pii.email)."""
+
+    __tablename__ = "tags"
+
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    category: Mapped[str] = mapped_column(String(32), default="general")  # general|classification
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TagAssignment(Base):
+    """A tag on a dataset (column NULL) or a column; suggestions wait for a steward."""
+
+    __tablename__ = "tag_assignments"
+    __table_args__ = (Index("uq_tag_assignments_target", "tag", "dataset_id", "column", unique=True),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    tag: Mapped[str] = mapped_column(ForeignKey("tags.name", ondelete="CASCADE"), index=True)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    # "" for the dataset itself (NULLs would defeat the unique index)
+    column: Mapped[str] = mapped_column(String(256), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active|suggested|rejected
+    source: Mapped[str] = mapped_column(String(32), default="manual")  # manual|name|pattern|lineage
+    confidence: Mapped[float | None] = mapped_column()
+    reason: Mapped[str] = mapped_column(Text, default="")
+    assigned_by: Mapped[str | None] = mapped_column(String(128))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class GlossaryTerm(Base):
+    __tablename__ = "glossary_terms"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(256), unique=True)
+    definition: Mapped[str] = mapped_column(Text, default="")
+    synonyms: Mapped[list[str]] = mapped_column(Json, default=list)
+    domain: Mapped[str | None] = mapped_column(String(128))
+    owner: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft|approved|deprecated
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class GlossaryLink(Base):
+    """A glossary term attached to a dataset (column "") or one of its columns."""
+
+    __tablename__ = "glossary_links"
+
+    term_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("glossary_terms.id", ondelete="CASCADE"), primary_key=True)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True)
+    column: Mapped[str] = mapped_column(String(256), primary_key=True, default="")
+
+
+class AccessGrant(Base):
+    """Read access to a dataset or a whole domain.
+
+    A dataset with grants (on itself or its domain) is restricted: only grantees,
+    admins and stewards can read it. Datasets without grants are open to signed-in users.
+    """
+
+    __tablename__ = "access_grants"
+    __table_args__ = (Index("uq_access_grants", "target_type", "target", "principal_type", "principal", unique=True),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    target_type: Mapped[str] = mapped_column(String(16))  # dataset|domain
+    target: Mapped[str] = mapped_column(String(256))  # dataset id or domain name
+    principal_type: Mapped[str] = mapped_column(String(16))  # role|user
+    principal: Mapped[str] = mapped_column(String(128))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MaskingPolicy(Base):
+    """Masks every column carrying ``tag`` for everyone except ``exempt_roles``."""
+
+    __tablename__ = "masking_policies"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    tag: Mapped[str] = mapped_column(ForeignKey("tags.name", ondelete="CASCADE"), index=True)
+    method: Mapped[str] = mapped_column(String(16), default="redact")  # redact|partial|hash|null
+    exempt_roles: Mapped[list[str]] = mapped_column(Json, default=list)
+    description: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RowFilter(Base):
+    """Rows of a dataset visible to non-exempt users: those matching ``predicate``."""
+
+    __tablename__ = "row_filters"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    predicate: Mapped[str] = mapped_column(Text)
+    exempt_roles: Mapped[list[str]] = mapped_column(Json, default=list)
+    description: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DqRule(Base):
+    __tablename__ = "dq_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    column: Mapped[str | None] = mapped_column(String(256))
+    rule_type: Mapped[str] = mapped_column(String(32))
+    params: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    # completeness|uniqueness|validity|consistency|timeliness|accuracy
+    dimension: Mapped[str] = mapped_column(String(32))
+    severity: Mapped[str] = mapped_column(String(16), default="warning")  # warning|critical
+    # The rule passes when at least this share of checked rows pass (1.0 = all).
+    threshold: Mapped[float] = mapped_column(default=1.0)
+    run_on_load: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    description: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str | None] = mapped_column(String(128))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DqResult(Base):
+    """One evaluation of one rule (a time series per rule)."""
+
+    __tablename__ = "dq_results"
+    __table_args__ = (Index("ix_dq_results_rule_ts", "rule_id", "ts"),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    rule_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dq_rules.id", ondelete="CASCADE"))
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    trigger: Mapped[str] = mapped_column(String(256), default="manual")
+    rows_checked: Mapped[int] = mapped_column(BigInteger, default=0)
+    rows_failed: Mapped[int] = mapped_column(BigInteger, default=0)
+    score: Mapped[float | None] = mapped_column()  # 0-100
+    passed: Mapped[bool | None] = mapped_column(Boolean)
+    table_version: Mapped[int | None] = mapped_column(BigInteger)
+    # A few failing values of the checked column (masked on read like any data).
+    sample: Mapped[list[Any]] = mapped_column(Json, default=list)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class DqScorecard(Base):
+    __tablename__ = "dq_scorecards"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    rule_ids: Mapped[list[str]] = mapped_column(Json, default=list)
+    schedule: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    # Alert when the score drops this many percent below the rolling baseline.
+    degradation_pct: Mapped[float] = mapped_column(default=10.0)
+    baseline_runs: Mapped[int] = mapped_column(Integer, default=7)
+    owner: Mapped[str | None] = mapped_column(String(128))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DqScorecardResult(Base):
+    __tablename__ = "dq_scorecard_results"
+    __table_args__ = (Index("ix_dq_scorecard_results_card_ts", "scorecard_id", "ts"),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    scorecard_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dq_scorecards.id", ondelete="CASCADE"))
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    score: Mapped[float | None] = mapped_column()
+    dimensions: Mapped[dict[str, float]] = mapped_column(Json, default=dict)
+    baseline: Mapped[float | None] = mapped_column()
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class NotificationChannel(Base):
+    """Where alerts go. Secret settings (webhook URL, token) live in Vault."""
+
+    __tablename__ = "notification_channels"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    type: Mapped[str] = mapped_column(String(16))  # webhook|email
+    # non-secret settings (email recipients) and vault:// references
+    config: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    # alert kinds to send (empty: all) and the lowest severity
+    kinds: Mapped[list[str]] = mapped_column(Json, default=list)
+    min_severity: Mapped[str] = mapped_column(String(16), default="warning")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -63,6 +63,14 @@ change_capture:
 serving:
   database: serving
 
+# Alert notifications. Email goes through this SMTP server (the dev profile runs
+# Mailpit, a local mail catcher at http://127.0.0.1:8025).
+notifications:
+  smtp:
+    host: ${SMTP_HOST:-}
+    port: ${SMTP_PORT:-1025}
+    sender: dataplat@localhost
+
 knowledge_graph:
   url: ${OXIGRAPH_URL:-http://oxigraph:7878}
 

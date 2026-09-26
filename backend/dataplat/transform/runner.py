@@ -201,13 +201,20 @@ class ModelRunner:
 
     # ---------------------------------------------------------------- preview
 
-    def preview(self, spec: ModelSpec, limit: int = PREVIEW_ROWS) -> dict[str, Any]:
+    def preview(self, spec: ModelSpec, limit: int = PREVIEW_ROWS, principal: Any = None) -> dict[str, Any]:
+        """First rows of a draft model. With a ``principal``, inputs are read under that
+        person's data policies (masking, row filters, grants), like any interactive read."""
+        from dataplat.security.policy import AccessDenied, PolicyEngine, secured_relations
+
         models = all_models(self.ctx)
         models[spec.name] = spec
         try:
             compiled = self.compile(spec, models)
             relations = self._relations(compiled)
-        except (TemplateError, ModelError, SkipModel) as e:
+            if principal is not None:
+                with self.ctx.metadata.session() as s:
+                    relations = secured_relations(self.ctx, PolicyEngine(s, principal), compiled.relations)
+        except (TemplateError, ModelError, SkipModel, AccessDenied, LookupError) as e:
             raise ModelError(str(e)) from e
         with sandbox(relations) as sb:
             try:
