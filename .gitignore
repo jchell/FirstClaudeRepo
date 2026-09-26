@@ -1,0 +1,26 @@
+# Secrets and local bootstrap material never belong in the repo.
+.env
+*.pem
+*.key
+vault-init.json
+.dataplat/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / console
+node_modules/
+console/dist/
+console/test-results/
+console/playwright-report/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.tsbuildinfo

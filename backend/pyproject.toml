@@ -1,0 +1,103 @@
+[project]
+name = "dataplat"
+version = "0.1.0"
+description = "Laptop-first, cloud-swappable data platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0.32",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "hvac>=2.3",
+    "argon2-cffi>=23.1",
+    "cryptography>=43",
+    "fsspec>=2024.6",
+    "s3fs>=2024.6",
+    # Keep these three in lockstep: the extension wheels are built per DuckDB version,
+    # which lets the image carry httpfs instead of downloading it at runtime.
+    "duckdb==1.5.5",
+    "duckdb-extensions==1.5.5",
+    "duckdb-extension-httpfs==1.5.5",
+    "pyarrow>=17",
+    "confluent-kafka>=2.5",
+    "apscheduler>=3.10,<4",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+dataplat = "dataplat.cli:main"
+
+# Adapter registry: config/platform.yaml names an adapter per port; the name is
+# resolved through these entry points, so swapping an adapter is a config change.
+[project.entry-points."dataplat.adapters.secret_store"]
+vault = "dataplat.adapters.vault_secrets:VaultSecretStore"
+memory = "dataplat.adapters.memory:InMemorySecretStore"
+
+[project.entry-points."dataplat.adapters.object_store"]
+minio = "dataplat.adapters.minio_store:MinioObjectStore"
+memory = "dataplat.adapters.memory:InMemoryObjectStore"
+
+[project.entry-points."dataplat.adapters.query_engine"]
+duckdb = "dataplat.adapters.duckdb_engine:DuckDBQueryEngine"
+
+[project.entry-points."dataplat.adapters.metadata_store"]
+postgres = "dataplat.adapters.pg_metadata:PostgresMetadataStore"
+
+[project.entry-points."dataplat.adapters.event_bus"]
+redpanda = "dataplat.adapters.redpanda_bus:RedpandaEventBus"
+memory = "dataplat.adapters.memory:InMemoryEventBus"
+
+[project.entry-points."dataplat.adapters.job_queue"]
+postgres = "dataplat.adapters.pg_queue:PostgresJobQueue"
+
+[project.entry-points."dataplat.adapters.token_signer"]
+vault_transit = "dataplat.adapters.jwt_identity:VaultTransitSigner"
+local = "dataplat.adapters.jwt_identity:LocalEd25519Signer"
+
+[project.entry-points."dataplat.adapters.knowledge_graph"]
+oxigraph = "dataplat.adapters.oxigraph_store:OxigraphStore"
+
+[project.entry-points."dataplat.adapters.lineage_sink"]
+postgres = "dataplat.adapters.pg_lineage:PostgresLineageSink"
+memory = "dataplat.adapters.memory:InMemoryLineageSink"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dataplat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: needs the docker compose stack (pytest -m integration)",
+]
+addopts = "-m 'not integration'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Cookie", "fastapi.Path", "fastapi.Query", "dataplat.api.deps.require_roles"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dataplat"]
+known-third-party = ["alembic"]
