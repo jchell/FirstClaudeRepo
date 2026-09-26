@@ -57,5 +57,7 @@ def secret_probe(ctx: PlatformContext, job: Job, secrets: SecretStore | None) ->
 
 # Domain handlers register themselves on import.
 from dataplat.ingestion import handlers as _ingestion_handlers  # noqa: E402, F401
+from dataplat.orchestration import notify as _notify_handlers  # noqa: E402, F401
+from dataplat.quality import handlers as _quality_handlers  # noqa: E402, F401
 from dataplat.transform import handlers as _transform_handlers  # noqa: E402, F401
 from dataplat.vault import handlers as _vault_handlers  # noqa: E402, F401

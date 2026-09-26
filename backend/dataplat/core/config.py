@@ -59,6 +59,20 @@ class ChangeCaptureConfig(BaseModel):
     url: str = "http://kafka-connect:8083"
 
 
+class SmtpConfig(BaseModel):
+    host: str | None = None  # unset: email channels are disabled
+    port: int = 25
+    sender: str = "dataplat@localhost"
+    starttls: bool = False
+    username: str | None = None
+    password: str | None = None  # vault:// reference
+
+
+class NotificationsConfig(BaseModel):
+    smtp: SmtpConfig = SmtpConfig()
+    timeout_seconds: float = 10
+
+
 class StreamingConfig(BaseModel):
     lineage_every_seconds: float = 300
     profile_every_seconds: float = 600
@@ -103,6 +117,7 @@ class PlatformConfig(BaseModel):
     change_capture: ChangeCaptureConfig = ChangeCaptureConfig()
     streaming: StreamingConfig = StreamingConfig()
     serving: ServingConfig = ServingConfig()
+    notifications: NotificationsConfig = NotificationsConfig()
     auth: AuthConfig = AuthConfig()
     worker: WorkerConfig = WorkerConfig()
     scheduler: SchedulerConfig = SchedulerConfig()

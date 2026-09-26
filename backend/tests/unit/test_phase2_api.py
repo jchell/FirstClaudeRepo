@@ -83,7 +83,8 @@ def test_raw_vault_models_pipelines_and_lineage(client: TestClient, ctx: Platfor
         job_id = s.scalars(select(IngestionJob.id)).one()
     IngestionRunner(ctx).run(job_id, None)
     kinds = drain(ctx)
-    assert kinds[:2] == ["vault.load", "pipeline.run"] and "pipeline.run" in kinds  # promotion + dims
+    assert kinds[0] == "vault.load" and kinds.count("pipeline.run") == 2  # promotion + dims
+    assert "governance.classify" in kinds  # new columns are scanned for PII
 
     models = {m["name"]: m for m in client.get("/api/transform/models", headers=eng).json()}
     assert models["customers"]["layer"] == "silver" and models["customers"]["last_run"]["status"] == "succeeded"

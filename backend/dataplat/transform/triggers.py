@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from dataplat.adapters.pg_queue import COALESCE_PREFIX, DuplicateJob
 from dataplat.core.context import PlatformContext
-from dataplat.db.models import Pipeline, VaultMapping
+from dataplat.db.models import Dataset, DqRule, Pipeline, VaultMapping
 
 log = logging.getLogger(__name__)
 
@@ -53,12 +53,29 @@ def notify_updated(
             pipelines = [
                 (p.id, p.name, p.trigger_datasets or []) for p in s.scalars(select(Pipeline).where(Pipeline.enabled))
             ]
+            on_load = {
+                f"{layer}.{name}"
+                for layer, name in s.execute(
+                    select(Dataset.layer, Dataset.name)
+                    .join(DqRule, DqRule.dataset_id == Dataset.id)
+                    .where(DqRule.enabled, DqRule.run_on_load)
+                )
+            }
         for ref in datasets:
             layer, _, name = ref.partition(".")
             if (layer, name) in sources and _enqueue(
                 ctx, "vault.load", {"layer": layer, "dataset": name, "trigger": trigger}, f"vault:{ref}"
             ):
                 queued["vault_loads"].append(ref)
+        for ref in datasets:
+            if ref in on_load and _enqueue(
+                ctx, "dq.run", {"dataset": ref, "on_load": True, "trigger": trigger}, f"dq:{ref}"
+            ):
+                queued.setdefault("dq", []).append(ref)
+        # New columns get classification suggestions; streams are rescanned periodically
+        # by the scheduler instead of after every micro-batch.
+        if not trigger.startswith("stream:") and _enqueue(ctx, "governance.classify", {}, "classify"):
+            queued.setdefault("classify", []).append("all")
         for pid, pname, triggers in pipelines:
             if pid != skip_pipeline and set(triggers) & set(datasets):
                 if _enqueue(ctx, "pipeline.run", {"pipeline_id": str(pid), "trigger": trigger}, f"pipeline:{pid}"):

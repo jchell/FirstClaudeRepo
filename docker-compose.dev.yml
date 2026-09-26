@@ -112,6 +112,16 @@ services:
       - ./samples:/samples:ro
     ports: ["127.0.0.1:18090:8090"]
 
+  # Local mail catcher for alert emails: http://127.0.0.1:8025
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports: ["127.0.0.1:8025:8025"]
+
+  # Alert emails go to Mailpit in the dev profile.
+  worker:
+    environment:
+      SMTP_HOST: mailpit
+
   # Seeds every source above: docker compose -f ... run --rm seed
   seed:
     profiles: [tools]

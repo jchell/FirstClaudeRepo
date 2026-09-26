@@ -143,7 +143,9 @@ def configure(client: hvac.Client, cfg: PlatformConfig) -> None:
     v = cfg.vault
 
     if "file/" not in client.sys.list_enabled_audit_devices()["data"]:
-        client.sys.enable_audit_device("file", options={"file_path": "/vault/logs/audit.log"})
+        # 0644: the API reads it (read-only mount) to show admins who accessed which
+        # secret; Vault HMACs every secret value in the log.
+        client.sys.enable_audit_device("file", options={"file_path": "/vault/logs/audit.log", "mode": "0644"})
         log.info("enabled file audit device")
 
     _ensure_mount(client, v.kv_mount, "kv", {"version": "2"})
@@ -175,6 +177,17 @@ def configure(client: hvac.Client, cfg: PlatformConfig) -> None:
     if not unchanged:
         client.secrets.kv.v2.create_or_update_secret(path=path, secret=minio, mount_point=v.kv_mount)
         log.info("stored minio credentials in vault")
+
+    # Key for hash masking (keyed, so masked values can't be reversed by hashing guesses).
+    # Generated once; rotating it changes every hash-masked value.
+    mpath = f"{v.kv_prefix}/platform/masking"
+    try:
+        client.secrets.kv.v2.read_secret_version(path=mpath, mount_point=v.kv_mount, raise_on_deleted_version=True)
+    except InvalidPath:
+        client.secrets.kv.v2.create_or_update_secret(
+            path=mpath, secret={"hmac_key": secrets.token_hex(32)}, mount_point=v.kv_mount
+        )
+        log.info("created the masking key in vault")
 
     _configure_database(client, cfg)
 

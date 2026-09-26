@@ -38,6 +38,11 @@ NO_GENERIC_LINEAGE = {
     "model.run",
     "model.preview",
     "pipeline.run",
+    "dq.run",
+    "governance.classify",
+    "alert.notify",
+    "alert.test",
+    "data.query",
 }
 
 

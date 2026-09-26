@@ -337,16 +337,23 @@ def preview(
     return _enqueue(ctx, s, connection_id, "connection.preview", {"request": body.model_dump(exclude_none=True)})
 
 
-# Short tasks the console polls for; previews carry data and are handed out once.
-SOURCE_TASKS = {"connection.test", "connection.discover", "connection.preview", "model.preview"}
-DATA_TASKS = {"connection.preview", "model.preview"}
+# Short tasks the console polls for; previews and queries carry data and are handed out once.
+SOURCE_TASKS = {"connection.test", "connection.discover", "connection.preview"}
+PERSONAL_TASKS = {"model.preview", "data.query", "alert.test"}  # visible to whoever queued them
+DATA_TASKS = {"connection.preview", "model.preview", "data.query"}
 
 
 @router.get("/tasks/{task_id}", response_model=TaskOut)
-def get_task(task_id: int, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(engineer)):
+def get_task(
+    task_id: int, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(current_principal)
+):
     row = s.get(JobRow, task_id)
-    if row is None or row.kind not in SOURCE_TASKS:
+    if row is None or row.kind not in SOURCE_TASKS | PERSONAL_TASKS:
         raise HTTPException(404, "task not found")
+    if row.kind in SOURCE_TASKS and not actor.has_role("engineer"):
+        raise HTTPException(404, "task not found")
+    if row.kind in PERSONAL_TASKS and (row.payload or {}).get("requested_by") not in (actor.name, None):
+        raise HTTPException(404, "task not found")  # someone else's query results
     out = TaskOut(
         task_id=row.id, kind=row.kind, status=row.status, result=row.result, error=_first_line(row.last_error)
     )

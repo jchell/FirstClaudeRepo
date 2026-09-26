@@ -38,7 +38,15 @@ def open_alert(
         if existing is not None:
             existing.message = message
             return False
-        s.add(Alert(kind=kind, target=target, message=message[:2000], severity=severity, details=details or {}))
+        alert = Alert(kind=kind, target=target, message=message[:2000], severity=severity, details=details or {})
+        s.add(alert)
+        s.flush()
+        alert_id = alert.id
+    try:
+        # Notification channels (webhook, email) are served by the worker.
+        ctx.jobs.enqueue("alert.notify", {"alert_id": alert_id}, max_attempts=3)
+    except Exception:
+        log.warning("could not queue alert notifications", exc_info=True)
     _publish(
         ctx, {"type": "alert.opened", "kind": kind, "target": target, "severity": severity, "message": message[:500]}
     )

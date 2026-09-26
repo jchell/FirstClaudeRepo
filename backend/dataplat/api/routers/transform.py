@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dataplat.adapters.pg_queue import COALESCE_PREFIX, DuplicateJob
-from dataplat.api.deps import client_ip, current_principal, get_ctx, get_session, require_roles
+from dataplat.api.deps import client_ip, current_principal, get_ctx, get_session, require_roles, task_principal
 from dataplat.core import audit
 from dataplat.core.context import PlatformContext
 from dataplat.core.ports.identity import Principal
@@ -238,9 +238,11 @@ class PreviewIn(BaseModel):
 
 
 @router.post("/preview", status_code=202)
-def preview(body: PreviewIn, ctx: PlatformContext = Depends(get_ctx), _: Principal = Depends(engineer)):
-    """Runs the model's query (first rows only) on a worker; poll /api/tasks/{id}."""
-    task = ctx.jobs.enqueue("model.preview", body.model_dump(), max_attempts=1)
+def preview(body: PreviewIn, ctx: PlatformContext = Depends(get_ctx), actor: Principal = Depends(engineer)):
+    """Runs the model's query (first rows only) on a worker; poll /api/tasks/{id}.
+
+    The preview reads its inputs under the caller's data policies (masking, filters)."""
+    task = ctx.jobs.enqueue("model.preview", {**body.model_dump(), **task_principal(actor)}, max_attempts=1)
     return {"task_id": task, "kind": "model.preview", "status": "queued"}
 
 

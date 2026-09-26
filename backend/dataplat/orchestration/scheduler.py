@@ -35,6 +35,7 @@ class SchedulerService:
     def __init__(self, ctx: PlatformContext) -> None:
         self.ctx = ctx
         self._last_compaction = float("-inf")
+        self._last_classify = float("-inf")
 
     def tick(self) -> int:
         now = datetime.now(UTC)
@@ -75,6 +76,12 @@ class SchedulerService:
                 for j in s.scalars(select(IngestionJob).where(IngestionJob.enabled))
                 if j.spec.get("load_mode") in ("cdc", "stream")
             ]
+        if time.monotonic() - self._last_classify > 600:
+            try:
+                self.ctx.jobs.enqueue("governance.classify", {}, dedupe_key="coalesce:classify")
+            except DuplicateJob:
+                pass
+            self._last_classify = time.monotonic()
         if time.monotonic() - self._last_compaction > 3600:
             for dataset in streaming:
                 try:
