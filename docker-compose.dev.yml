@@ -14,7 +14,7 @@ services:
       POSTGRES_DB: sales
       POSTGRES_USER: dev
       POSTGRES_PASSWORD: *dev-password
-    command: ["postgres", "-c", "wal_level=logical"]
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=30", "-c", "max_wal_senders=30"]
     ports: ["127.0.0.1:15432:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dev -d sales"]
@@ -22,7 +22,8 @@ services:
       retries: 20
 
   src-mysql:
-    image: mysql:8.4
+    # 8.0: Debezium 2.7 still uses SHOW MASTER STATUS, which MySQL 8.4 removed.
+    image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: *dev-password
       MYSQL_DATABASE: shop
@@ -43,6 +44,7 @@ services:
       ACCEPT_EULA: "Y"
       MSSQL_PID: Developer
       MSSQL_SA_PASSWORD: Dev-Source-2026
+      MSSQL_AGENT_ENABLED: "true"  # SQL Server CDC runs as Agent jobs
     ports: ["127.0.0.1:11433:1433"]
     healthcheck:
       test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P Dev-Source-2026 -Q 'select 1' || exit 1"]
@@ -51,12 +53,26 @@ services:
 
   src-mongo:
     image: mongo:7
+    # A single-node replica set: CDC reads MongoDB change streams, which need one.
+    # Replica sets with auth need a key file; generated at start (test system only).
+    entrypoint:
+      - bash
+      - -c
+      - >-
+        openssl rand -base64 756 > /tmp/keyfile && chmod 400 /tmp/keyfile && chown 999:999 /tmp/keyfile &&
+        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/keyfile --bind_ip_all
     environment:
       MONGO_INITDB_ROOT_USERNAME: dev
       MONGO_INITDB_ROOT_PASSWORD: *dev-password
     ports: ["127.0.0.1:17017:27017"]
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      # Initiates the replica set on first run, then reports healthy once it's primary.
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh -u dev -p devsource --quiet --eval
+          "try { rs.status().ok } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'src-mongo:27017'}]}).ok }"
+          && mongosh -u dev -p devsource --quiet --eval "db.hello().isWritablePrimary" | grep -q true
       interval: 5s
       retries: 30
 

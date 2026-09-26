@@ -5,10 +5,17 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import pyarrow as pa
-from deltalake import DeltaTable, write_deltalake
+import pyarrow.compute  # noqa: F401  (pa.compute)
+from deltalake import CommitProperties, DeltaTable, Transaction, write_deltalake
 from deltalake.exceptions import TableNotFoundError
 
 from dataplat.core.config import PlatformConfig
+
+
+def _commit(app_transactions: dict[str, int] | None) -> CommitProperties | None:
+    if not app_transactions:
+        return None
+    return CommitProperties(app_transactions=[Transaction(app, version) for app, version in app_transactions.items()])
 
 
 class DeltaTableFormat:
@@ -31,29 +38,73 @@ class DeltaTableFormat:
         uri: str,
         mode: Literal["append", "overwrite"] = "append",
         schema_mode: Literal["merge", "overwrite"] | None = None,
+        app_transactions: dict[str, int] | None = None,
     ) -> int:
-        """Writes in a single commit and returns the new table version."""
+        """Writes in a single commit and returns the new table version.
+
+        ``app_transactions`` (app id -> version) are recorded in the same commit; streams
+        use them to store the source offsets they wrote, which makes replays idempotent.
+        """
         write_deltalake(
             uri,
             table,
             mode=mode,
             schema_mode=schema_mode or ("overwrite" if mode == "overwrite" else "merge"),
             storage_options=self._opts(uri),
+            commit_properties=_commit(app_transactions),
         )
         return self.table(uri).version()
 
-    def merge(self, table: pa.Table, uri: str, keys: list[str]) -> int:
+    def merge(
+        self,
+        table: pa.Table,
+        uri: str,
+        keys: list[str],
+        delete_flag: str | None = None,
+        app_transactions: dict[str, int] | None = None,
+    ) -> int:
+        """Upserts rows by ``keys``; rows whose ``delete_flag`` column is true delete the match."""
         if not self.exists(uri):
-            return self.write(table, uri, "overwrite")
+            if delete_flag and delete_flag in table.column_names:
+                table = table.filter(pa.compute.invert(pa.compute.fill_null(table.column(delete_flag), False)))
+                table = table.drop_columns([delete_flag])
+            return self.write(table, uri, "append", app_transactions=app_transactions)
         predicate = " AND ".join(f"t.`{k}` = s.`{k}`" for k in keys)
-        (
-            self.table(uri)
-            .merge(table, predicate, source_alias="s", target_alias="t")
-            .when_matched_update_all()
-            .when_not_matched_insert_all()
-            .execute()
+        m = self.table(uri).merge(
+            table,
+            predicate,
+            source_alias="s",
+            target_alias="t",
+            merge_schema=True,
+            commit_properties=_commit(app_transactions),
         )
+        if delete_flag:
+            # The flag drives the merge but is not stored in the target table.
+            cols = {c: f"s.`{c}`" for c in table.column_names if c != delete_flag}
+            m = (
+                m.when_matched_delete(f"s.`{delete_flag}` = true")
+                .when_matched_update(cols, f"s.`{delete_flag}` = false")
+                .when_not_matched_insert(cols, f"s.`{delete_flag}` = false")
+            )
+        else:
+            m = m.when_matched_update_all().when_not_matched_insert_all()
+        m.execute()
         return self.table(uri).version()
+
+    def app_transaction_version(self, uri: str, app_id: str) -> int | None:
+        if not self.exists(uri):
+            return None
+        return self.table(uri).transaction_version(app_id)
+
+    def compact(self, uri: str, retention_hours: int = 168) -> dict[str, Any]:
+        """Merges small files (streams write many) and removes files older than the retention."""
+        dt = self.table(uri)
+        metrics = dt.optimize.compact()
+        removed = dt.vacuum(retention_hours=retention_hours, dry_run=False, enforce_retention_duration=True)
+        return {
+            "compaction": {k: v for k, v in metrics.items() if isinstance(v, int | float)},
+            "vacuumed_files": len(removed),
+        }
 
     def table(self, uri: str, version: int | None = None) -> DeltaTable:
         try:

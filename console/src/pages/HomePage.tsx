@@ -20,7 +20,7 @@ import { Link } from 'react-router-dom';
 
 import { api } from '../api/client';
 import { fmtBytes, fmtDuration, fmtNumber, fmtTime } from '../api/tasks';
-import type { ComponentHealth, OpsSummary } from '../api/types';
+import type { AlertInfo, ComponentHealth, OpsSummary } from '../api/types';
 import { RunsChart } from '../components/RunsChart';
 import { StatusBadge } from '../components/StatusBadge';
 
@@ -63,6 +63,7 @@ export function HomePage() {
     queryFn: () => api<OpsSummary>(`/api/ops/summary?hours=${hours}`),
     refetchInterval: 10_000,
   });
+  const alerts = useQuery({ queryKey: ['alerts'], queryFn: () => api<AlertInfo[]>('/api/alerts'), refetchInterval: 15_000 });
   const t = ops.data?.totals;
 
   return (
@@ -80,6 +81,32 @@ export function HomePage() {
           aria-label="Time range"
         />
       </Group>
+
+      {!!alerts.data?.length && (
+        <Paper withBorder p="md" radius="md" data-testid="open-alerts">
+          <Group gap={6} mb="xs">
+            <IconAlertTriangle size={18} color="#d03b3b" aria-hidden />
+            <Text fw={600}>Open alerts ({alerts.data.length})</Text>
+          </Group>
+          <Stack gap={4}>
+            {alerts.data.map((a) => (
+              <Group key={a.id} gap="xs" wrap="nowrap">
+                <Badge
+                  color={a.severity === 'critical' ? 'red' : a.severity === 'serious' ? 'orange' : 'yellow'}
+                  variant="light"
+                  leftSection={<IconAlertTriangle size={12} aria-hidden />}
+                >
+                  {a.severity}
+                </Badge>
+                <Text size="sm">{a.message}</Text>
+                <Text size="xs" c="dimmed">
+                  since {fmtTime(a.opened_at)}
+                </Text>
+              </Group>
+            ))}
+          </Stack>
+        </Paper>
+      )}
 
       <SimpleGrid cols={{ base: 2, md: 5 }}>
         <Stat label="Runs" value={fmtNumber(t?.runs)} hint={t ? `${t.running} running` : undefined} />

@@ -33,8 +33,14 @@ def service_policies(cfg: PlatformConfig) -> dict[str, str]:
         + platform_read
         + f'path "auth/token/create/{v.sa_token_role}" {{ capabilities = ["update"] }}\n'
         + 'path "sys/policies/acl/sa-*" { capabilities = ["read"] }\n',
-        # Kafka Connect (Debezium) reads CDC source credentials via its Vault config provider.
-        "dataplat-kafka-connect": f'path "{kv}/data/{pre}/cdc/*" {{ capabilities = ["read"] }}\n',
+        # Kafka Connect (Debezium) logs into CDC sources itself, resolving ${vault:...}
+        # placeholders in connector configs with its Vault config provider. Its REST API
+        # is only reachable on the compose network and 127.0.0.1, and only the platform
+        # creates connectors on it.
+        "dataplat-kafka-connect": (
+            f'path "{kv}/data/{pre}/service-accounts/+/connections/*" {{ capabilities = ["read"] }}\n'
+            f'path "{kv}/data/{pre}/cdc/*" {{ capabilities = ["read"] }}\n'
+        ),
     }
 
 

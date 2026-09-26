@@ -112,6 +112,8 @@ class IngestionRunner:
                 raise IngestionError(f"ingestion job {job_id} not found")
             conn = s.get(Connection, job.connection_id)
             spec = JobSpec.model_validate(job.spec)
+            if spec.load_mode in ("cdc", "stream"):
+                raise IngestionError(f"{job.name} runs continuously on the stream worker")
             state = s.get(IngestionState, job.id)
             seen_files = {
                 f.path: f.fingerprint for f in s.scalars(select(IngestedFile).where(IngestedFile.job_id == job.id))

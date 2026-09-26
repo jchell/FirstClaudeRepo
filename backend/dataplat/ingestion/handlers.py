@@ -113,3 +113,83 @@ def run_ingestion(ctx: PlatformContext, job: Job, secrets: SecretStore | None) -
         queue_job_id=job.id,
         trigger=job.payload.get("trigger", "manual"),
     )
+
+
+@handler("ingestion.watch")
+def watch_for_files(ctx: PlatformContext, job: Job, secrets: SecretStore | None) -> dict[str, Any]:
+    """File-arrival trigger: runs the ingestion job as soon as new or changed files appear."""
+    from sqlalchemy import select
+
+    from dataplat.adapters.pg_queue import DuplicateJob
+    from dataplat.db.models import IngestedFile, IngestionJob
+    from dataplat.ingestion.spec import JobSpec
+
+    job_id = uuid.UUID(job.payload["ingestion_job_id"])
+    with ctx.metadata.session() as s:
+        ing = s.get(IngestionJob, job_id)
+        if ing is None or not ing.enabled:
+            return {"skipped": "job missing or disabled"}
+        conn = s.get(Connection, ing.connection_id)
+        seen = {f.path: f.fingerprint for f in s.scalars(select(IngestedFile).where(IngestedFile.job_id == job_id))}
+        spec = JobSpec.model_validate(ing.spec)
+        conn_type, conn_config, account = conn.type, dict(conn.config), conn.service_account
+    with get_connector_class(conn_type)(conn_config, secrets) as c:
+        new = []
+        for path in c.match(spec.source.path_template or "", datetime.now(UTC)):
+            info = c.fs.info(path)
+            rel = c._rel(path)
+            from dataplat.connectors.files import _mtime
+
+            fingerprint = f"{info.get('size')}:{_mtime(info)}:{info.get('ETag') or info.get('etag') or ''}"
+            if seen.get(rel) != fingerprint:
+                new.append(rel)
+    if not new:
+        return {"new_files": 0}
+    try:
+        task = ctx.jobs.enqueue(
+            "ingestion.run",
+            {"ingestion_job_id": str(job_id), "trigger": "file_arrival"},
+            dedupe_key=f"ingest:{job_id}",
+            service_account=account,
+        )
+    except DuplicateJob:
+        return {"new_files": len(new), "run": "already queued"}
+    return {"new_files": len(new), "files": new[:20], "task_id": task}
+
+
+@handler("table.maintenance")
+def table_maintenance(ctx: PlatformContext, job: Job, secrets: SecretStore | None) -> dict[str, Any]:
+    """Compacts the small files streams write and vacuums files older than a week."""
+    uri = ctx.config.lake.uri(job.payload["layer"], job.payload["dataset"])
+    if not ctx.tables.exists(uri):
+        return {"skipped": "no table"}
+    return ctx.tables.compact(uri)
+
+
+@handler("cdc.cleanup")
+def cdc_cleanup(ctx: PlatformContext, job: Job, secrets: SecretStore | None) -> dict[str, Any]:
+    """Drops what a deleted Postgres CDC job left in the source database.
+
+    Debezium never drops its replication slot, and an abandoned slot makes the source
+    keep WAL forever. Runs as the connection's service account (it needs the password).
+    """
+    from sqlalchemy import text
+
+    if job.payload.get("connection_type") != "postgres":
+        return {"skipped": "nothing to clean up for this source type"}
+    slot = job.payload["slot"]
+    c = get_connector_class("postgres")(job.payload["config"], secrets)
+    try:
+        with c.engine.connect() as conn:
+            dropped = conn.execute(
+                text(
+                    "select pg_drop_replication_slot(slot_name) from pg_replication_slots"
+                    " where slot_name = :s and not active"
+                ),
+                {"s": slot},
+            ).rowcount
+            conn.execute(text(f'drop publication if exists "{slot}"'))
+            conn.commit()
+    finally:
+        c.close()
+    return {"slot_dropped": bool(dropped), "publication": slot}

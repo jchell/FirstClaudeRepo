@@ -15,7 +15,10 @@ from dataplat.security.auth import AuthError, AuthService, IssuedSession
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 REFRESH_COOKIE = "dataplat_refresh"
+# Per client and username (account lockout covers brute force against one account),
+# plus a looser cap per client address.
 _login_limiter = SlidingWindowLimiter(limit=20, window_seconds=300)
+_login_ip_limiter = SlidingWindowLimiter(limit=200, window_seconds=300)
 
 
 class LoginRequest(BaseModel):
@@ -62,7 +65,9 @@ def _respond(ctx: PlatformContext, response: Response, issued: IssuedSession) ->
 @router.post("/login", response_model=LoginResponse)
 def login(body: LoginRequest, request: Request, response: Response, ctx: PlatformContext = Depends(get_ctx)):
     ip = client_ip(request)
-    if not _login_limiter.allow(ip or "unknown"):
+    if not _login_ip_limiter.allow(ip or "unknown") or not _login_limiter.allow(
+        f"{ip}|{body.username.strip().lower()}"
+    ):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many login attempts")
 
     failure: AuthError | None = None

@@ -126,9 +126,16 @@ services:
   kafka-connect:
     # Debezium on Kafka Connect for log-based CDC. Left out by the "lite" profile.
     profiles: [full]
-    image: debezium/connect:2.7.3.Final
+    image: dataplat-kafka-connect:dev
+    build:
+      context: ./infra/kafka-connect
     restart: unless-stopped
     environment:
+      # JSON without embedded schemas; the stream processor reads plain change records.
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
       BOOTSTRAP_SERVERS: redpanda:9092
       GROUP_ID: dataplat-connect
       CONFIG_STORAGE_TOPIC: _dataplat_connect_configs
@@ -138,7 +145,8 @@ services:
       OFFSET_STORAGE_REPLICATION_FACTOR: "1"
       STATUS_STORAGE_REPLICATION_FACTOR: "1"
     volumes:
-      # Its own AppRole, for the Vault config provider wired up with CDC in Phase 1b.
+      # Its own AppRole: the Vault config provider resolves ${vault:...} placeholders
+      # in connector configs, so source credentials never appear in them.
       - ${DATAPLAT_HOME:?}/approle/kafka-connect:/run/secrets/dataplat:ro
     ports: ["127.0.0.1:8083:8083"]
     depends_on:

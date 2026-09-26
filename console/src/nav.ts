@@ -47,6 +47,7 @@ export const PAGES: NavPage[] = [
   },
   {
     path: '/streams',
+    ready: true,
     label: 'Streams & Replication',
     icon: IconBolt,
     phase: '1b',

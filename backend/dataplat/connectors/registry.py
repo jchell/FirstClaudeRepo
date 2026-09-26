@@ -6,7 +6,7 @@ from importlib.metadata import entry_points
 
 from dataplat.connectors.api import RestApiConnector
 from dataplat.connectors.base import Connector
-from dataplat.connectors.events import KafkaConnector
+from dataplat.connectors.events import KafkaConnector, WebhookConnector
 from dataplat.connectors.files import FtpConnector, LocalFilesConnector, S3Connector, SftpConnector, SmbConnector
 from dataplat.connectors.nosql import MongoConnector
 from dataplat.connectors.rdbms import MySqlConnector, OracleConnector, PostgresConnector, SqlServerConnector
@@ -24,6 +24,7 @@ BUILTIN: list[type[Connector]] = [
     MongoConnector,
     RestApiConnector,
     KafkaConnector,
+    WebhookConnector,
 ]
 
 

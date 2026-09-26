@@ -21,9 +21,14 @@ BASE = datetime(2026, 1, 1, tzinfo=UTC)
 app = FastAPI()
 
 CUSTOMERS = [
-    {"id": i, "name": f"Customer {i}", "email": f"c{i}@example.com", "tier": ["gold", "silver", "bronze"][i % 3],
-     "address": {"city": ["Oslo", "Lyon", "Porto"][i % 3], "zip": f"{1000 + i}"},
-     "updated_at": (BASE + timedelta(hours=i)).isoformat()}
+    {
+        "id": i,
+        "name": f"Customer {i}",
+        "email": f"c{i}@example.com",
+        "tier": ["gold", "silver", "bronze"][i % 3],
+        "address": {"city": ["Oslo", "Lyon", "Porto"][i % 3], "zip": f"{1000 + i}"},
+        "updated_at": (BASE + timedelta(hours=i)).isoformat(),
+    }
     for i in range(1, 58)
 ]
 ORDERS = [{"order_id": i, "customer_id": (i % 57) + 1, "total": round(i * 3.7, 2)} for i in range(1, 124)]
@@ -52,7 +57,9 @@ async def token(request: Request) -> dict:
 
 
 @app.get("/v1/customers")
-def customers(page: int = 1, page_size: int = 20, since: str | None = None, authorization: str | None = Header(None)) -> dict:
+def customers(
+    page: int = 1, page_size: int = 20, since: str | None = None, authorization: str | None = Header(None)
+) -> dict:
     """Page-number pagination, bearer auth, optional incremental ?since=."""
     _bearer(authorization)
     rows = [c for c in CUSTOMERS if not since or c["updated_at"] > since]

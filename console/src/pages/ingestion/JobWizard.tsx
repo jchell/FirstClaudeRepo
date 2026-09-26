@@ -38,6 +38,8 @@ const EMPTY: JobSpec = {
   schedule: { type: 'none' },
 };
 
+const CDC_TYPES = ['postgres', 'mysql', 'sqlserver', 'mongodb'];
+
 const slug = (s: string) =>
   s
     .toLowerCase()
@@ -103,6 +105,7 @@ export function JobWizard() {
   const category = types.data?.find((t) => t.type === conn?.type)?.category;
   const src = spec.source;
   const setSource = (patch: Partial<JobSpec['source']>) => setSpec((s) => ({ ...s, source: { ...s.source, ...patch } }));
+  const continuous = spec.load_mode === 'cdc' || spec.load_mode === 'stream';
   const help = LOAD_HELP[category === 'file' ? 'file' : category === 'event' ? 'event' : 'default'];
   const columns = useMemo(() => preview?.columns.map((c) => c.name) ?? [], [preview]);
 
@@ -141,8 +144,16 @@ export function JobWizard() {
   };
 
   const sourceReady =
-    category === 'file' ? !!src.path_template : category === 'database' ? !!(sqlMode === 'query' ? src.query : src.object) : !!src.object;
-  const loadReady = spec.load_mode !== 'incremental' || category === 'file' || category === 'event' || !!spec.watermark_column;
+    conn?.type === 'webhook'
+      ? true
+      : category === 'file'
+        ? !!src.path_template
+        : category === 'database'
+          ? !!(sqlMode === 'query' ? src.query : src.object)
+          : !!src.object;
+  const loadReady =
+    (conn?.type !== 'webhook' || spec.load_mode === 'stream') &&
+    (spec.load_mode !== 'incremental' || category === 'file' || category === 'event' || !!spec.watermark_column);
 
   const save = async (runAfter: boolean) => {
     setBusy('Saving');
@@ -164,7 +175,7 @@ export function JobWizard() {
             body: json({ name, description, connection_id: connectionId, spec: finalSpec }),
           });
       if (runAfter) await api(`/api/ingestion/jobs/${job.id}/run`, { method: 'POST' });
-      navigate(`/ingestion/${job.id}`);
+      navigate(continuous ? '/streams' : `/ingestion/${job.id}`);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -266,6 +277,11 @@ export function JobWizard() {
               </Stack>
             ) : category === 'api' ? (
               <ApiSourceFields src={src} setSource={setSource} />
+            ) : conn?.type === 'webhook' ? (
+              <Alert variant="light">
+                Events posted to <Code>/ingest/events/{String(conn.config.stream_name)}</Code> (with the connection&apos;s key) are
+                streamed into bronze. Issue a key on the Connections page.
+              </Alert>
             ) : (
               <Select
                 label={category === 'event' ? 'Topic' : category === 'nosql' ? 'Collection' : 'Table'}
@@ -315,13 +331,86 @@ export function JobWizard() {
         {/* ------------------------------------------------ 3. load mode */}
         <Stepper.Step label="Load mode" description="How each run loads">
           <Stack mt="md" maw={640}>
-            <Radio.Group value={spec.load_mode} onChange={(v) => setSpec({ ...spec, load_mode: v as JobSpec['load_mode'] })}>
+            <Radio.Group
+              value={spec.load_mode}
+              onChange={(v) =>
+                setSpec({
+                  ...spec,
+                  load_mode: v as JobSpec['load_mode'],
+                  schedule: v === 'cdc' || v === 'stream' ? { type: 'none' } : spec.schedule,
+                })
+              }
+            >
               <Stack>
-                <Radio value="full" label="Full" description={help.full} />
-                <Radio value="incremental" label={category === 'file' ? 'New files only' : 'Incremental (watermark)'} description={help.incremental} />
-                <Radio value="append" label="Append" description={help.append} />
+                {conn?.type !== 'webhook' && (
+                  <>
+                    <Radio value="full" label="Full" description={help.full} />
+                    <Radio value="incremental" label={category === 'file' ? 'New files only' : 'Incremental (watermark)'} description={help.incremental} />
+                    <Radio value="append" label="Append" description={help.append} />
+                  </>
+                )}
+                {CDC_TYPES.includes(conn?.type ?? '') && (
+                  <Radio
+                    value="cdc"
+                    label={<Group gap={6}>Real-time replication (CDC) <Badge size="xs" variant="light">near real time</Badge></Group>}
+                    description="Debezium reads the database's change log: an initial snapshot, then every insert, update and delete within seconds."
+                  />
+                )}
+                {(conn?.type === 'kafka' || conn?.type === 'webhook') && (
+                  <Radio
+                    value="stream"
+                    label={<Group gap={6}>Continuous stream <Badge size="xs" variant="light">near real time</Badge></Group>}
+                    description="Consume the topic continuously and append events to bronze in micro-batches."
+                  />
+                )}
               </Stack>
             </Radio.Group>
+            {(spec.load_mode === 'cdc' || spec.load_mode === 'stream') && (
+              <Paper withBorder p="sm">
+                <Stack gap="xs">
+                  {spec.load_mode === 'cdc' && (
+                    <>
+                      <SegmentedControl
+                        value={spec.stream?.write_mode ?? 'changelog'}
+                        onChange={(v) => setSpec({ ...spec, stream: { ...(spec.stream ?? {}), write_mode: v as 'changelog' | 'mirror' } })}
+                        data={[
+                          { label: 'Change log (full history)', value: 'changelog' },
+                          { label: 'Mirror (current state)', value: 'mirror' },
+                        ]}
+                      />
+                      <Text size="xs" c="dimmed">
+                        {spec.stream?.write_mode === 'mirror'
+                          ? 'Keeps one row per primary key: updates overwrite, deletes remove (Delta MERGE).'
+                          : 'Appends every change with _op (c, u, d, r), _source_ts and _offset.'}
+                      </Text>
+                      <Checkbox
+                        label="Copy the existing rows first (initial snapshot)"
+                        checked={(spec.stream?.snapshot ?? 'initial') === 'initial'}
+                        onChange={(e) =>
+                          setSpec({ ...spec, stream: { write_mode: 'changelog', ...(spec.stream ?? {}), snapshot: e.currentTarget.checked ? 'initial' : 'never' } })
+                        }
+                      />
+                    </>
+                  )}
+                  <Group grow>
+                    <NumberInput
+                      label="Batch: at most (records)"
+                      min={1}
+                      value={spec.stream?.max_records ?? 1000}
+                      onChange={(v) => setSpec({ ...spec, stream: { write_mode: 'changelog', ...(spec.stream ?? {}), max_records: Number(v) } })}
+                    />
+                    <NumberInput
+                      label="…or every (seconds)"
+                      min={0.5}
+                      step={0.5}
+                      decimalScale={1}
+                      value={spec.stream?.max_seconds ?? 5}
+                      onChange={(v) => setSpec({ ...spec, stream: { write_mode: 'changelog', ...(spec.stream ?? {}), max_seconds: Number(v) } })}
+                    />
+                  </Group>
+                </Stack>
+              </Paper>
+            )}
             {spec.load_mode === 'incremental' && category !== 'file' && category !== 'event' && (
               <Select
                 label="Watermark column"
@@ -356,15 +445,32 @@ export function JobWizard() {
               onChange={(e) => setSpec({ ...spec, target: { layer: 'bronze', dataset: e.currentTarget.value } })}
               error={spec.target.dataset && !/^[a-z][a-z0-9_]{1,62}$/.test(spec.target.dataset) ? 'Invalid name' : undefined}
             />
-            <SegmentedControl
-              value={spec.schedule.type}
-              onChange={(v) => setSpec({ ...spec, schedule: { type: v as JobSpec['schedule']['type'] } })}
-              data={[
-                { label: 'Manual', value: 'none' },
-                { label: 'Cron', value: 'cron' },
-                { label: 'Every…', value: 'interval' },
-              ]}
-            />
+            {continuous ? (
+              <Text size="sm" c="dimmed">
+                Runs continuously once saved; pause and resume it on the Streams & Replication page.
+              </Text>
+            ) : (
+              <SegmentedControl
+                value={spec.schedule.type}
+                onChange={(v) =>
+                  setSpec({ ...spec, schedule: { type: v as JobSpec['schedule']['type'], ...(v === 'file_arrival' ? { poll_seconds: 30 } : {}) } })
+                }
+                data={[
+                  { label: 'Manual', value: 'none' },
+                  { label: 'Cron', value: 'cron' },
+                  { label: 'Every…', value: 'interval' },
+                  ...(category === 'file' ? [{ label: 'When files arrive', value: 'file_arrival' }] : []),
+                ]}
+              />
+            )}
+            {spec.schedule.type === 'file_arrival' && (
+              <NumberInput
+                label="Check for new files every (seconds)"
+                min={10}
+                value={spec.schedule.poll_seconds ?? 30}
+                onChange={(v) => setSpec({ ...spec, schedule: { type: 'file_arrival', poll_seconds: Number(v) } })}
+              />
+            )}
             {spec.schedule.type === 'cron' && (
               <TextInput
                 label="Cron expression (UTC)"
@@ -376,10 +482,11 @@ export function JobWizard() {
             )}
             {spec.schedule.type === 'interval' && (
               <NumberInput
-                label="Every (minutes)"
-                min={1}
-                value={spec.schedule.interval_seconds ? spec.schedule.interval_seconds / 60 : ''}
-                onChange={(v) => setSpec({ ...spec, schedule: { type: 'interval', interval_seconds: Number(v) * 60 } })}
+                label="Every (seconds)"
+                description="At least 10 seconds"
+                min={10}
+                value={spec.schedule.interval_seconds ?? ''}
+                onChange={(v) => setSpec({ ...spec, schedule: { type: 'interval', interval_seconds: Number(v) } })}
               />
             )}
             <Checkbox
@@ -438,11 +545,15 @@ export function JobWizard() {
               </Text>
               <Text size="sm">
                 Schedule:{' '}
-                {spec.schedule.type === 'none'
-                  ? 'manual'
-                  : spec.schedule.type === 'cron'
-                    ? `cron ${spec.schedule.cron}`
-                    : `every ${(spec.schedule.interval_seconds ?? 0) / 60} min`}
+                {continuous
+                  ? 'continuous'
+                  : spec.schedule.type === 'none'
+                    ? 'manual'
+                    : spec.schedule.type === 'cron'
+                      ? `cron ${spec.schedule.cron}`
+                      : spec.schedule.type === 'file_arrival'
+                        ? `when files arrive (checked every ${spec.schedule.poll_seconds ?? 30} s)`
+                        : `every ${spec.schedule.interval_seconds ?? 0} s`}
               </Text>
               <Text size="xs" c="dimmed" mt={4}>
                 Each run adds _load_ts, _source, _batch_id and _file columns, registers the table in the catalog, profiles
@@ -453,12 +564,14 @@ export function JobWizard() {
               <Button variant="default" onClick={() => setStep(3)}>
                 Back
               </Button>
-              <Button variant="light" loading={busy === 'Saving'} disabled={!/^[a-z][a-z0-9_-]{1,127}$/.test(name)} onClick={() => save(false)}>
-                Save
+              <Button variant={continuous ? 'filled' : 'light'} loading={busy === 'Saving'} disabled={!/^[a-z][a-z0-9_-]{1,127}$/.test(name)} onClick={() => save(false)}>
+                {continuous ? 'Save and start' : 'Save'}
               </Button>
-              <Button loading={busy === 'Saving'} disabled={!/^[a-z][a-z0-9_-]{1,127}$/.test(name)} onClick={() => save(true)}>
-                Save and run now
-              </Button>
+              {!continuous && (
+                <Button loading={busy === 'Saving'} disabled={!/^[a-z][a-z0-9_-]{1,127}$/.test(name)} onClick={() => save(true)}>
+                  Save and run now
+                </Button>
+              )}
             </Group>
           </Stack>
         </Stepper.Step>

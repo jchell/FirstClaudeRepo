@@ -49,6 +49,7 @@ class DatasetOut(BaseModel):
     table_version: int | None
     last_loaded_at: datetime | None
     source_job_id: uuid.UUID | None
+    freshness_sla_minutes: int | None = None
     columns: int = 0
 
 
@@ -81,14 +82,14 @@ def _ds_out(s: Session, d: Dataset) -> DatasetOut:
 def search_datasets(
     q: str | None = None,
     layer: str | None = None,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     _: Principal = Depends(current_principal),
 ):
     return [_ds_out(s, d) for d in catalog.search(s, q, layer)]
 
 
 @router.get("/catalog/datasets/{dataset_id}", response_model=DatasetDetail)
-def dataset_detail(dataset_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def dataset_detail(dataset_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     d = s.get(Dataset, dataset_id)
     if d is None:
         raise HTTPException(404, "dataset not found")
@@ -112,6 +113,8 @@ def dataset_detail(dataset_id: uuid.UUID, s: Session = Depends(get_session), _: 
 
 class DatasetPatch(BaseModel):
     description: str | None = None
+    # Minutes; 0 removes the SLA.
+    freshness_sla_minutes: int | None = Field(default=None, ge=0, le=60 * 24 * 90)
     owner: str | None = None
     column_descriptions: dict[str, str] = {}
 
@@ -121,7 +124,7 @@ def update_dataset(
     dataset_id: uuid.UUID,
     body: DatasetPatch,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     actor: Principal = Depends(require_roles("engineer", "steward")),
 ):
     d = s.get(Dataset, dataset_id)
@@ -131,6 +134,8 @@ def update_dataset(
         d.description = body.description
     if body.owner is not None:
         d.owner = body.owner
+    if body.freshness_sla_minutes is not None:
+        d.freshness_sla_minutes = body.freshness_sla_minutes or None
     for name, desc in body.column_descriptions.items():
         col = s.get(DatasetColumn, (d.id, name))
         if col is None:
@@ -145,7 +150,7 @@ def update_dataset(
 def preview_dataset(
     dataset_id: uuid.UUID,
     limit: int = 50,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(require_roles("engineer", "analyst", "steward")),
 ) -> dict[str, Any]:
@@ -162,7 +167,7 @@ def preview_dataset(
 
 @router.get("/catalog/datasets/{dataset_id}/profiles")
 def profile_history(
-    dataset_id: uuid.UUID, limit: int = 30, s: Session = Depends(get_session), _: Principal = Depends(current_principal)
+    dataset_id: uuid.UUID, limit: int = 30, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
 ) -> list[dict[str, Any]]:
     rows = s.scalars(
         select(DatasetProfile)
@@ -188,7 +193,7 @@ def lineage_graph(
     direction: Literal["upstream", "downstream", "both"] = "both",
     depth: int = 10,
     as_of: datetime | None = None,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     _: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
@@ -206,7 +211,7 @@ def lineage_graph(
 
 @router.get("/ops/summary")
 def ops_summary(
-    hours: int = 24, s: Session = Depends(get_session), _: Principal = Depends(current_principal)
+    hours: int = 24, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
 ) -> dict[str, Any]:
     since = datetime.now(UTC) - timedelta(hours=min(max(hours, 1), 24 * 90))
     runs = list(
@@ -296,7 +301,7 @@ class AppOut(BaseModel):
 
 
 @router.get("/portal/apps", response_model=list[AppOut])
-def list_apps(s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def list_apps(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     return [
         AppOut.model_validate(a, from_attributes=True) for a in s.scalars(select(PortalApp).order_by(PortalApp.name))
     ]
@@ -313,7 +318,7 @@ def _check_datasets(refs: list[str]) -> None:
 def create_app_entry(
     body: AppIn,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     actor: Principal = Depends(require_roles("engineer", "analyst")),
 ):
     if body.url.scheme not in ("http", "https"):
@@ -334,7 +339,7 @@ def update_app_entry(
     app_id: uuid.UUID,
     body: AppIn,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     actor: Principal = Depends(require_roles("engineer", "analyst")),
 ):
     app = s.get(PortalApp, app_id)
@@ -352,7 +357,7 @@ def update_app_entry(
 def delete_app_entry(
     app_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     actor: Principal = Depends(require_roles("engineer", "analyst")),
 ):
     app = s.get(PortalApp, app_id)

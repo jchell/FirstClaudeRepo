@@ -119,18 +119,24 @@ def parse_file(data: bytes, fmt: str, options: dict[str, Any], path: str = "") -
 
 
 def normalize_records(records: list[Any]) -> list[dict[str, Any]]:
-    """Keeps scalars; nested objects/arrays become JSON strings so schemas stay stable."""
+    """Keeps scalars; nested objects/arrays become JSON strings so schemas stay stable.
+
+    Every record gets every key seen in the batch (missing ones as None):
+    ``pa.Table.from_pylist`` takes its columns from the first record only, so a field
+    absent from the first document would otherwise be dropped for the whole batch.
+    """
     out = []
+    keys: dict[str, None] = {}
     for r in records:
         if not isinstance(r, dict):
             r = {"value": r}
-        out.append(
-            {
-                str(k): json.dumps(v, default=str, sort_keys=True) if isinstance(v, dict | list) else v
-                for k, v in r.items()
-            }
-        )
-    return out
+        row = {
+            str(k): json.dumps(v, default=str, sort_keys=True) if isinstance(v, dict | list) else v
+            for k, v in r.items()
+        }
+        keys.update(dict.fromkeys(row))
+        out.append(row)
+    return [{k: row.get(k) for k in keys} for row in out]
 
 
 # ---------------------------------------------------------------- base

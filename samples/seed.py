@@ -30,22 +30,32 @@ def customers(n: int = 60) -> list[dict]:
     out = []
     for i in range(1, n + 1):
         first, last = random.choice(FIRST), random.choice(LAST)
-        out.append({
-            "id": i, "first_name": first, "last_name": last,
-            "email": f"{first.lower()}.{last.lower()}{i}@example.com",
-            "phone": f"+47 {random.randint(400, 999)} {random.randint(10, 99)} {random.randint(100, 999)}",
-            "city": random.choice(CITIES), "state": random.choice(["NO", "FR", "PT", "AT", "FI", "IE"]),
-            "updated_at": TODAY - timedelta(days=n - i),
-        })  # fmt: skip
+        out.append(
+            {
+                "id": i,
+                "first_name": first,
+                "last_name": last,
+                "email": f"{first.lower()}.{last.lower()}{i}@example.com",
+                "phone": f"+47 {random.randint(400, 999)} {random.randint(10, 99)} {random.randint(100, 999)}",
+                "city": random.choice(CITIES),
+                "state": random.choice(["NO", "FR", "PT", "AT", "FI", "IE"]),
+                "updated_at": TODAY - timedelta(days=n - i),
+            }
+        )
     return out
 
 
 def orders(n: int = 200) -> list[dict]:
     return [
-        {"order_id": i, "customer_id": random.randint(1, 60), "amount": round(random.uniform(5, 500), 2),
-         "status": random.choice(["new", "paid", "shipped", "returned"]), "order_date": (TODAY - timedelta(days=i % 30)).date().isoformat()}
+        {
+            "order_id": i,
+            "customer_id": random.randint(1, 60),
+            "amount": round(random.uniform(5, 500), 2),
+            "status": random.choice(["new", "paid", "shipped", "returned"]),
+            "order_date": (TODAY - timedelta(days=i % 30)).date().isoformat(),
+        }
         for i in range(1, n + 1)
-    ]  # fmt: skip
+    ]
 
 
 def retry(name: str, fn, attempts: int = 30) -> None:
@@ -76,9 +86,14 @@ def seed_postgres() -> None:
                 "%(state)s,%(updated_at)s)",
                 customers(),
             )
-        c.execute("create table crm.orders (order_id int primary key, customer_id int, amount numeric(10,2), status text, order_date date)")
+        c.execute(
+            "create table crm.orders (order_id int primary key, customer_id int, amount numeric(10,2), status text, order_date date)"
+        )
         with c.cursor() as cur:
-            cur.executemany("insert into crm.orders values (%(order_id)s,%(customer_id)s,%(amount)s,%(status)s,%(order_date)s)", orders())
+            cur.executemany(
+                "insert into crm.orders values (%(order_id)s,%(customer_id)s,%(amount)s,%(status)s,%(order_date)s)",
+                orders(),
+            )
 
 
 def seed_mysql() -> None:
@@ -87,12 +102,22 @@ def seed_mysql() -> None:
     c = pymysql.connect(host="src-mysql", user="dev", password=PW, database="shop", autocommit=True)
     with c.cursor() as cur:
         cur.execute("drop table if exists products")
-        cur.execute("create table products (sku varchar(20) primary key, name varchar(100), price decimal(8,2), stock int, updated_at datetime)")
+        cur.execute(
+            "create table products (sku varchar(20) primary key, name varchar(100), price decimal(8,2), stock int, updated_at datetime)"
+        )
         cur.executemany(
             "insert into products values (%s,%s,%s,%s,%s)",
-            [(f"SKU-{i:04d}", f"Product {i}", round(random.uniform(1, 99), 2), random.randint(0, 500),
-              (TODAY - timedelta(hours=i)).replace(tzinfo=None)) for i in range(1, 81)],
-        )  # fmt: skip
+            [
+                (
+                    f"SKU-{i:04d}",
+                    f"Product {i}",
+                    round(random.uniform(1, 99), 2),
+                    random.randint(0, 500),
+                    (TODAY - timedelta(hours=i)).replace(tzinfo=None),
+                )
+                for i in range(1, 81)
+            ],
+        )
     c.close()
 
 
@@ -103,23 +128,43 @@ def seed_mssql() -> None:
     cur = c.cursor()
     cur.execute("if db_id('erp') is null create database erp")
     cur.execute("use erp; if object_id('dbo.suppliers') is not null drop table dbo.suppliers")
-    cur.execute("use erp; create table dbo.suppliers (id int primary key, name nvarchar(100), country nchar(2), rating decimal(3,1))")
-    cur.executemany("insert into erp.dbo.suppliers values (%d, %s, %s, %s)",
-                    [(i, f"Supplier {i}", random.choice(["NO", "DE", "US"]), round(random.uniform(1, 5), 1)) for i in range(1, 31)])  # fmt: skip
+    cur.execute(
+        "use erp; create table dbo.suppliers (id int primary key, name nvarchar(100), country nchar(2), rating decimal(3,1))"
+    )
+    # Change data capture for Debezium (needs SQL Server Agent).
+    cur.execute(
+        "use erp; if not exists (select 1 from sys.databases where name = 'erp' and is_cdc_enabled = 1) exec sys.sp_cdc_enable_db"
+    )
+    cur.executemany(
+        "insert into erp.dbo.suppliers values (%d, %s, %s, %s)",
+        [(i, f"Supplier {i}", random.choice(["NO", "DE", "US"]), round(random.uniform(1, 5), 1)) for i in range(1, 31)],
+    )
+    cur.execute(
+        "use erp; exec sys.sp_cdc_enable_table @source_schema = 'dbo', @source_name = 'suppliers', @role_name = NULL"
+    )
     c.close()
 
 
 def seed_mongo() -> None:
     from pymongo import MongoClient
 
-    db = MongoClient("src-mongo", 27017, username="dev", password=PW, serverSelectionTimeoutMS=5000)["catalog"]
+    db = MongoClient("src-mongo", 27017, username="dev", password=PW, serverSelectionTimeoutMS=5000, replicaSet="rs0")[
+        "catalog"
+    ]
     db.reviews.drop()
-    db.reviews.insert_many([
-        {"review_id": i, "sku": f"SKU-{random.randint(1, 80):04d}", "stars": random.randint(1, 5),
-         "text": random.choice(["great", "ok", "meh", "love it"]), "author": {"name": random.choice(FIRST), "verified": i % 2 == 0},
-         "created_at": TODAY - timedelta(minutes=i)}
-        for i in range(1, 101)
-    ])  # fmt: skip
+    db.reviews.insert_many(
+        [
+            {
+                "review_id": i,
+                "sku": f"SKU-{random.randint(1, 80):04d}",
+                "stars": random.randint(1, 5),
+                "text": random.choice(["great", "ok", "meh", "love it"]),
+                "author": {"name": random.choice(FIRST), "verified": i % 2 == 0},
+                "created_at": TODAY - timedelta(minutes=i),
+            }
+            for i in range(1, 101)
+        ]
+    )
 
 
 def orders_csv(rows: list[dict]) -> bytes:
@@ -153,8 +198,17 @@ def seed_ftp() -> None:
         fs.mkdir("/exports")
     except Exception:
         pass
-    lines = "\n".join(json.dumps({"invoice": f"INV-{i}", "amount": round(random.uniform(10, 900), 2),
-                                  "currency": "EUR", "customer_id": random.randint(1, 60)}) for i in range(1, 51))  # fmt: skip
+    lines = "\n".join(
+        json.dumps(
+            {
+                "invoice": f"INV-{i}",
+                "amount": round(random.uniform(10, 900), 2),
+                "currency": "EUR",
+                "customer_id": random.randint(1, 60),
+            }
+        )
+        for i in range(1, 51)
+    )
     fs.pipe_file(f"/exports/invoices_{STAMP}.jsonl", lines.encode() + b"\n")
 
 
@@ -170,15 +224,21 @@ def seed_smb() -> None:
 def seed_s3() -> None:
     import s3fs
 
-    fs = s3fs.S3FileSystem(key="devsource", secret="devsource-secret", client_kwargs={"endpoint_url": "http://src-s3:9000"},
-                           skip_instance_cache=True)  # fmt: skip
+    fs = s3fs.S3FileSystem(
+        key="devsource",
+        secret="devsource-secret",
+        client_kwargs={"endpoint_url": "http://src-s3:9000"},
+        skip_instance_cache=True,
+    )
     if not fs.exists("partner-drop"):
         fs.mkdir("partner-drop")
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     buf = io.BytesIO()
-    pq.write_table(pa.table({"sku": [f"SKU-{i:04d}" for i in range(1, 21)], "partner_price": [i * 1.5 for i in range(1, 21)]}), buf)
+    pq.write_table(
+        pa.table({"sku": [f"SKU-{i:04d}" for i in range(1, 21)], "partner_price": [i * 1.5 for i in range(1, 21)]}), buf
+    )
     fs.pipe_file(f"partner-drop/prices/prices_{STAMP}.parquet", buf.getvalue())
 
 
@@ -192,8 +252,17 @@ def seed_kafka() -> None:
         admin.create_topics([NewTopic("web.clickstream", 3, 1)])["web.clickstream"].result(10)
     p = Producer({"bootstrap.servers": servers})
     for i in range(1, 301):
-        p.produce("web.clickstream", json.dumps({"session": f"s{i % 40}", "page": random.choice(["/", "/cart", "/p/1"]),
-                                                  "ts": (TODAY - timedelta(seconds=i)).isoformat()}).encode(), key=f"s{i % 40}")  # fmt: skip
+        p.produce(
+            "web.clickstream",
+            json.dumps(
+                {
+                    "session": f"s{i % 40}",
+                    "page": random.choice(["/", "/cart", "/p/1"]),
+                    "ts": (TODAY - timedelta(seconds=i)).isoformat(),
+                }
+            ).encode(),
+            key=f"s{i % 40}",
+        )
     p.flush(10)
 
 
@@ -209,9 +278,17 @@ def seed_landing() -> None:
 if __name__ == "__main__":
     only = set(sys.argv[1:])
     steps = {
-        "landing": seed_landing, "postgres": seed_postgres, "mysql": seed_mysql, "mongo": seed_mongo,
-        "sftp": seed_sftp, "ftp": seed_ftp, "smb": seed_smb, "s3": seed_s3, "kafka": seed_kafka, "mssql": seed_mssql,
-    }  # fmt: skip
+        "landing": seed_landing,
+        "postgres": seed_postgres,
+        "mysql": seed_mysql,
+        "mongo": seed_mongo,
+        "sftp": seed_sftp,
+        "ftp": seed_ftp,
+        "smb": seed_smb,
+        "s3": seed_s3,
+        "kafka": seed_kafka,
+        "mssql": seed_mssql,
+    }
     if not only:
         only = set(steps) - {"mssql"}  # SQL Server only when its profile runs: seed.py mssql
     for name in steps:

@@ -20,6 +20,7 @@ import { ConnectionsPage } from './pages/connections/ConnectionsPage';
 import { JobDetailPage, JobsPage } from './pages/ingestion/JobsPage';
 import { JobWizard } from './pages/ingestion/JobWizard';
 import { PortalPage } from './pages/portal/PortalPage';
+import { StreamsPage } from './pages/streams/StreamsPage';
 
 // The lineage graph libraries are large; load them only when lineage is opened.
 const LineagePage = lazy(() => import('./pages/lineage/LineagePage').then((m) => ({ default: m.LineagePage })));
@@ -60,6 +61,7 @@ createRoot(document.getElementById('root')!).render(
                 <Route path="catalog/:datasetId" element={<DatasetPage />} />
                 <Route path="lineage" element={<Suspense fallback={null}><LineagePage /></Suspense>} />
                 <Route path="portal" element={<PortalPage />} />
+                <Route path="streams" element={<StreamsPage />} />
                 {PAGES.filter((p) => !p.ready).map((p) => (
                   <Route key={p.path} path={p.path.slice(1)} element={<PlaceholderPage page={p} />} />
                 ))}

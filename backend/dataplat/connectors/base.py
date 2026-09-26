@@ -25,6 +25,8 @@ from dataplat.core.ports.secrets import SecretStore
 from dataplat.core.secrets import SecretRef
 
 LoadMode = Literal["full", "incremental", "append"]
+# Continuous modes (Phase 1b): Debezium change capture, and event streams.
+JobMode = Literal["full", "incremental", "append", "cdc", "stream"]
 
 
 class ConnectorError(Exception):

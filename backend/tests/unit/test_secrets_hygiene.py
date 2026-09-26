@@ -109,3 +109,19 @@ def test_secret_ref_roundtrip(ref: str) -> None:
 def test_secret_ref_rejects_invalid(bad: str) -> None:
     with pytest.raises(ValueError):
         SecretRef.parse(bad)
+
+
+def test_db_sessions_commit_before_the_response_is_sent() -> None:
+    """Every endpoint's session must use scope="function" (see api/deps.get_session)."""
+    from dataplat.api.deps import get_session
+
+    def walk(dependant, out):
+        for d in dependant.dependencies:
+            if d.call is get_session:
+                out.append(getattr(d, "scope", None) or getattr(d, "computed_scope", None))
+            walk(d, out)
+
+    scopes: list = []
+    for route in iter_api_routes(create_app().routes):
+        walk(route.dependant, scopes)
+    assert scopes and set(scopes) == {"function"}, set(scopes)

@@ -350,6 +350,8 @@ class Dataset(Base):
     size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     table_version: Mapped[int | None] = mapped_column(BigInteger)
     last_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Freshness SLA: alert when the dataset hasn't been loaded for this long.
+    freshness_sla_minutes: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -405,3 +407,68 @@ class PortalApp(Base):
     datasets: Mapped[list[str]] = mapped_column(Json, default=list)
     created_by: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ================================================================ Phase 1b: streams, alerts
+
+
+class StreamState(Base):
+    """Runtime state of a continuous (CDC / event stream) ingestion job."""
+
+    __tablename__ = "stream_state"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ingestion_jobs.id", ondelete="CASCADE"), primary_key=True)
+    # desired: what the operator asked for; status: what the stream worker reports.
+    desired: Mapped[str] = mapped_column(String(16), default="running")  # running|paused
+    status: Mapped[str] = mapped_column(String(16), default="starting")  # starting|running|paused|failed
+    connector_name: Mapped[str | None] = mapped_column(String(255))
+    topics: Mapped[list[str]] = mapped_column(Json, default=list)
+    key_columns: Mapped[list[str] | None] = mapped_column(Json)
+    worker: Mapped[str | None] = mapped_column(String(128))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_batch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    metrics: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    totals: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+
+
+class StreamMetric(Base):
+    """Per-minute stream metrics, for the Streams & Replication charts."""
+
+    __tablename__ = "stream_metrics"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ingestion_jobs.id", ondelete="CASCADE"), primary_key=True)
+    minute: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    records: Mapped[int] = mapped_column(BigInteger, default=0)
+    batches: Mapped[int] = mapped_column(Integer, default=0)
+    dlq: Mapped[int] = mapped_column(Integer, default=0)
+    latency_p50_ms: Mapped[int | None] = mapped_column(BigInteger)
+    latency_p95_ms: Mapped[int | None] = mapped_column(BigInteger)
+    lag: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class WebhookKey(Base):
+    """API key for POST /ingest/events/{stream}; only its SHA-256 hash is stored."""
+
+    __tablename__ = "webhook_keys"
+
+    connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("connections.id", ondelete="CASCADE"), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hint: Mapped[str] = mapped_column(String(8))  # last characters, to tell keys apart
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+    __table_args__ = (Index("ix_alerts_open", "kind", "target", "resolved_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64))  # freshness|stream_failed|...
+    severity: Mapped[str] = mapped_column(String(16), default="warning")  # warning|serious|critical
+    target: Mapped[str] = mapped_column(String(512))
+    message: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

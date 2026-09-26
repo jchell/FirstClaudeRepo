@@ -151,3 +151,37 @@ class KafkaConnector(Connector):
         table = pa.Table.from_pylist(normalize_records(records))
         ctx.rows += table.num_rows
         return Batch(table, source=f"{self.namespace()}/{request.object}")
+
+
+class WebhookConfig(BaseModel):
+    stream_name: str = Field(
+        pattern=r"^[a-z][a-z0-9_-]{1,62}$", description="Events are posted to /ingest/events/<name>"
+    )
+
+
+class WebhookConnector(Connector):
+    """Events pushed to the platform over HTTP (POST /ingest/events/{stream_name}).
+
+    The API publishes accepted events to the platform topic ``webhook.<stream_name>``;
+    a continuous ingestion job streams that topic into bronze.
+    """
+
+    type = "webhook"
+    label = "Webhook (HTTP push)"
+    category = "event"
+    Config = WebhookConfig
+
+    def topic(self) -> str:
+        return f"webhook.{self.config.stream_name}"
+
+    def namespace(self) -> str:
+        return "webhook://dataplat"
+
+    def test(self) -> dict[str, Any]:
+        return {"endpoint": f"/ingest/events/{self.config.stream_name}", "topic": self.topic()}
+
+    def discover(self, pattern: str | None = None) -> list[SourceObject]:
+        return [SourceObject(name=self.topic(), kind="topic")]
+
+    def read(self, request: ReadRequest, ctx: ReadContext) -> Iterator[Batch]:
+        raise ConnectorError("webhook streams are read continuously by the stream worker")

@@ -6,12 +6,14 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from dataplat.adapters.debezium_capture import ChangeCaptureError
 from dataplat.adapters.pg_queue import DuplicateJob
 from dataplat.api.deps import client_ip, current_principal, get_ctx, get_session, require_roles
 from dataplat.connectors.registry import get_connector_class
@@ -26,8 +28,10 @@ from dataplat.db.models import (
     IngestionRun,
     IngestionState,
     Schedule,
+    StreamState,
 )
-from dataplat.ingestion.spec import JobSpec, decode_watermark, validate_for_category
+from dataplat.ingestion.spec import JobSpec, decode_watermark, is_continuous, validate_for_category
+from dataplat.streaming.debezium import build_config, connector_name
 
 router = APIRouter(prefix="/api/ingestion", tags=["ingestion"])
 engineer = require_roles("engineer")
@@ -127,7 +131,7 @@ def _validate(s: Session, connection_id: uuid.UUID, raw: dict[str, Any], job_id:
         raise HTTPException(422, "connection not found")
     try:
         spec = JobSpec.model_validate(raw)
-        validate_for_category(spec, get_connector_class(conn.type).category)
+        validate_for_category(spec, get_connector_class(conn.type).category, conn.type)
     except (ValidationError, ValueError) as e:
         msg = (
             "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())
@@ -143,9 +147,35 @@ def _validate(s: Session, connection_id: uuid.UUID, raw: dict[str, Any], job_id:
     return spec
 
 
+def _sync_stream(ctx: PlatformContext, s: Session, job: IngestionJob, spec: JobSpec, conn: Connection) -> None:
+    """Creates/updates the stream state and, for CDC, the Debezium connector."""
+    state = s.get(StreamState, job.id)
+    if not is_continuous(spec):
+        if state is not None:
+            s.delete(state)
+        return
+    if state is None:
+        state = StreamState(job_id=job.id, status="starting", topics=[], metrics={}, totals={})
+        s.add(state)
+    state.desired = "running" if job.enabled else "paused"
+    if spec.load_mode == "cdc":
+        name = connector_name(job.id)
+        state.connector_name = name
+        try:
+            ctx.change_capture.create_connector(
+                name, build_config(ctx.config, job.id, conn.type, conn.name, conn.config, spec)
+            )
+            if not job.enabled:
+                ctx.change_capture.pause(name)
+            elif ctx.change_capture.status(name).get("state") == "PAUSED":
+                ctx.change_capture.resume(name)
+        except (ChangeCaptureError, httpx.HTTPError) as e:
+            raise HTTPException(502, f"Kafka Connect: {e}") from e
+
+
 def _sync_schedule(s: Session, job: IngestionJob, spec: JobSpec, conn: Connection) -> None:
     sched = s.get(Schedule, job.schedule_id) if job.schedule_id else None
-    if spec.schedule.type == "none":
+    if spec.schedule.type == "none" or is_continuous(spec):
         if sched is not None:
             job.schedule_id = None
             s.flush()
@@ -156,21 +186,30 @@ def _sync_schedule(s: Session, job: IngestionJob, spec: JobSpec, conn: Connectio
         s.add(sched)
         s.flush()
         job.schedule_id = sched.id
+    watch = spec.schedule.type == "file_arrival"
+    # File arrival: a light "watch" job polls the source and starts a run when files appear.
+    sched.kind = "ingestion.watch" if watch else "ingestion.run"
     sched.payload = {"ingestion_job_id": str(job.id), "trigger": "schedule"}
     sched.service_account = conn.service_account
     sched.cron = spec.schedule.cron if spec.schedule.type == "cron" else None
-    sched.interval_seconds = spec.schedule.interval_seconds if spec.schedule.type == "interval" else None
+    sched.interval_seconds = (
+        spec.schedule.poll_seconds
+        if watch
+        else spec.schedule.interval_seconds
+        if spec.schedule.type == "interval"
+        else None
+    )
     sched.enabled = job.enabled
     sched.next_run_at = None  # scheduler computes the next fire time from the new definition
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs(s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def list_jobs(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     return [_job_out(s, j) for j in s.scalars(select(IngestionJob).order_by(IngestionJob.name))]
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def get_job(job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     j = s.get(IngestionJob, job_id)
     if j is None:
         raise HTTPException(404, "job not found")
@@ -178,7 +217,13 @@ def get_job(job_id: uuid.UUID, s: Session = Depends(get_session), _: Principal =
 
 
 @router.post("/jobs", response_model=JobOut, status_code=201)
-def create_job(body: JobIn, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(engineer)):
+def create_job(
+    body: JobIn,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
+    actor: Principal = Depends(engineer),
+):
     spec = _validate(s, body.connection_id, body.spec)
     job = IngestionJob(
         name=body.name,
@@ -195,7 +240,9 @@ def create_job(body: JobIn, request: Request, s: Session = Depends(get_session),
     except IntegrityError as e:
         raise HTTPException(409, "a job with that name exists") from e
     s.add(IngestionJobVersion(job_id=job.id, version=1, spec=job.spec, created_by=actor.name))
-    _sync_schedule(s, job, spec, s.get(Connection, body.connection_id))
+    conn = s.get(Connection, body.connection_id)
+    _sync_schedule(s, job, spec, conn)
+    _sync_stream(ctx, s, job, spec, conn)
     audit.record(s, actor=actor.name, action="ingestion_job.create", target=job.name, ip=client_ip(request))
     s.flush()
     return _job_out(s, job)
@@ -206,7 +253,8 @@ def update_job(
     job_id: uuid.UUID,
     body: JobUpdate,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
     job = s.get(IngestionJob, job_id)
@@ -222,7 +270,9 @@ def update_job(
         job.version += 1
         job.spec = new_spec
         s.add(IngestionJobVersion(job_id=job.id, version=job.version, spec=new_spec, created_by=actor.name))
-    _sync_schedule(s, job, spec, s.get(Connection, job.connection_id))
+    conn = s.get(Connection, job.connection_id)
+    _sync_schedule(s, job, spec, conn)
+    _sync_stream(ctx, s, job, spec, conn)
     audit.record(
         s,
         actor=actor.name,
@@ -237,11 +287,29 @@ def update_job(
 
 @router.delete("/jobs/{job_id}", status_code=204)
 def delete_job(
-    job_id: uuid.UUID, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(engineer)
+    job_id: uuid.UUID,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
+    actor: Principal = Depends(engineer),
 ):
     job = s.get(IngestionJob, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    if job.spec.get("load_mode") == "cdc":
+        try:
+            ctx.change_capture.delete_connector(connector_name(job.id))
+        except (ChangeCaptureError, httpx.HTTPError) as e:
+            raise HTTPException(502, f"Kafka Connect: {e}") from e
+        conn = s.get(Connection, job.connection_id)
+        # The source keeps a replication slot/publication for the connector: drop them
+        # from the worker (it runs as the service account that can read the password).
+        ctx.jobs.enqueue(
+            "cdc.cleanup",
+            {"connection_type": conn.type, "config": dict(conn.config), "slot": f"dataplat_{job.id.hex[:12]}"},
+            service_account=conn.service_account,
+            max_attempts=5,
+        )
     sched_id = job.schedule_id
     s.delete(job)
     s.flush()
@@ -251,7 +319,7 @@ def delete_job(
 
 
 @router.get("/jobs/{job_id}/versions")
-def job_versions(job_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def job_versions(job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     rows = s.scalars(
         select(IngestionJobVersion)
         .where(IngestionJobVersion.job_id == job_id)
@@ -266,13 +334,15 @@ def job_versions(job_id: uuid.UUID, s: Session = Depends(get_session), _: Princi
 def run_now(
     job_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ) -> dict[str, Any]:
     job = s.get(IngestionJob, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    if is_continuous(job.spec):
+        raise HTTPException(409, "this job runs continuously; pause or resume it on the Streams page")
     conn = s.get(Connection, job.connection_id)
     try:
         task = ctx.jobs.enqueue(
@@ -289,7 +359,7 @@ def run_now(
 
 @router.post("/jobs/{job_id}/reset-state", status_code=204)
 def reset_state(
-    job_id: uuid.UUID, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(engineer)
+    job_id: uuid.UUID, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(engineer)
 ):
     """Forgets the watermark and ingested-file list, so the next run starts from scratch."""
     job = s.get(IngestionJob, job_id)
@@ -305,7 +375,7 @@ def list_runs(
     job_id: uuid.UUID | None = None,
     status: str | None = None,
     limit: int = 100,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     _: Principal = Depends(current_principal),
 ):
     q = (
@@ -322,7 +392,7 @@ def list_runs(
 
 
 @router.get("/runs/{run_id}", response_model=RunOut)
-def get_run(run_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def get_run(run_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     r = s.get(IngestionRun, run_id)
     if r is None:
         raise HTTPException(404, "run not found")

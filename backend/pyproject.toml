@@ -77,6 +77,9 @@ postgres = "dataplat.adapters.pg_queue:PostgresJobQueue"
 vault_transit = "dataplat.adapters.jwt_identity:VaultTransitSigner"
 local = "dataplat.adapters.jwt_identity:LocalEd25519Signer"
 
+[project.entry-points."dataplat.adapters.change_capture"]
+debezium = "dataplat.adapters.debezium_capture:DebeziumChangeCapture"
+
 [project.entry-points."dataplat.adapters.knowledge_graph"]
 oxigraph = "dataplat.adapters.oxigraph_store:OxigraphStore"
 
