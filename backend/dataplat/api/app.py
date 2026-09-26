@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from dataplat.api.routers import admin, auth, catalog, connections, ingestion, platform
+from dataplat.api.routers import admin, auth, catalog, connections, ingestion, platform, streams
 from dataplat.core.context import PlatformContext
 from dataplat.core.logging import configure_logging
 
@@ -40,6 +40,7 @@ def create_app(ctx: PlatformContext | None = None) -> FastAPI:
     app.include_router(connections.router)
     app.include_router(ingestion.router)
     app.include_router(catalog.router)
+    app.include_router(streams.router)
     return app
 
 

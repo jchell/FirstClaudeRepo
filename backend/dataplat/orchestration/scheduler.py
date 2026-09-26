@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -17,7 +18,7 @@ from sqlalchemy import or_, select
 from dataplat.adapters.pg_queue import DuplicateJob
 from dataplat.core.context import PlatformContext
 from dataplat.core.logging import configure_logging
-from dataplat.db.models import Schedule
+from dataplat.db.models import IngestionJob, Schedule
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ def next_run(schedule: Schedule, after: datetime) -> datetime | None:
 class SchedulerService:
     def __init__(self, ctx: PlatformContext) -> None:
         self.ctx = ctx
+        self._last_compaction = float("-inf")
 
     def tick(self) -> int:
         now = datetime.now(UTC)
@@ -61,6 +63,29 @@ class SchedulerService:
                 sch.last_run_at = now
                 sch.next_run_at = next_run(sch, now)
         return enqueued
+
+    def housekeeping(self) -> None:
+        """Freshness SLAs, and compaction of tables that streams write to."""
+        from dataplat.orchestration.alerts import check_freshness
+
+        check_freshness(self.ctx)
+        with self.ctx.metadata.session() as s:
+            streaming = [
+                j.spec["target"]["dataset"]
+                for j in s.scalars(select(IngestionJob).where(IngestionJob.enabled))
+                if j.spec.get("load_mode") in ("cdc", "stream")
+            ]
+        if time.monotonic() - self._last_compaction > 3600:
+            for dataset in streaming:
+                try:
+                    self.ctx.jobs.enqueue(
+                        "table.maintenance",
+                        {"layer": "bronze", "dataset": dataset},
+                        dedupe_key=f"maintain:bronze.{dataset}",
+                    )
+                except DuplicateJob:
+                    pass
+            self._last_compaction = time.monotonic()
 
     def dispatch_tokens(self) -> int:
         """Attaches a single-use, service-account-scoped Vault token to waiting jobs.
@@ -91,6 +116,7 @@ def main() -> None:
         service.tick, "interval", seconds=ctx.config.scheduler.tick_seconds, max_instances=1, coalesce=True
     )
     scheduler.add_job(service.dispatch_tokens, "interval", seconds=2, max_instances=1, coalesce=True)
+    scheduler.add_job(service.housekeeping, "interval", seconds=60, max_instances=1, coalesce=True)
     log.info("scheduler started (tick %ss)", ctx.config.scheduler.tick_seconds)
     try:
         scheduler.start()

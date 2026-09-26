@@ -19,6 +19,7 @@ class MongoConfig(BaseModel):
     username: str | None = None
     password: str | None = Field(default=None, description="vault:// reference")
     auth_source: str = "admin"
+    replica_set: str | None = Field(default=None, description="Needed for CDC (change streams)")
     tls: bool = False
 
 
@@ -40,6 +41,10 @@ class MongoConnector(Connector):
         if self._client is None:
             c = self.config
             kwargs: dict[str, Any] = {"serverSelectionTimeoutMS": 10_000, "tls": c.tls}
+            if c.replica_set:
+                kwargs["replicaSet"] = c.replica_set
+            else:
+                kwargs["directConnection"] = True
             if c.username:
                 kwargs.update(username=c.username, password=self.secret("password"), authSource=c.auth_source)
             self._client = MongoClient(c.host, c.port, **kwargs)

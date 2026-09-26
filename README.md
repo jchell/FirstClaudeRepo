@@ -8,8 +8,9 @@ phases listed there.
 |---|---|
 | 0 — Foundations | ✅ done |
 | 1 — Ingestion MVP | ✅ done |
-| 1b — Near-real-time | next |
-| 2, 3, 3b, 4, 5 | planned |
+| 1b — Near-real-time | ✅ done |
+| 2 — Vault & Transform | next |
+| 3, 3b, 4, 5 | planned |
 
 ## Quick start (Windows)
 
@@ -70,6 +71,40 @@ Every run:
 The **App Portal** lists reports and apps. Naming the datasets an app reads puts the app into
 lineage.
 
+### Near-real-time (Phase 1b)
+
+In the wizard, two load modes run continuously on the stream worker:
+- **Real-time replication (CDC)**, for PostgreSQL, MySQL, SQL Server and MongoDB connections;
+- **Continuous stream**, for Kafka topics and webhook streams.
+
+CDC uses Debezium on Kafka Connect: an initial snapshot, then every insert, update and delete,
+in two write modes:
+- **change log:** append-only history with `_op`, `_source_ts` and `_offset`;
+- **mirror:** the current state, applied with Delta MERGE by primary key.
+
+In the dev setup, changes reach bronze within a second or two.
+
+How it works:
+- **Credentials:** connector configs hold only `${vault:...}` placeholders. Kafka Connect
+  resolves them with its own AppRole through a small Vault config provider
+  (`infra/kafka-connect`).
+- **No duplicates or losses:** each micro-batch closes at N records or T seconds. It is written
+  in a single Delta commit that also records the Kafka offsets it covered (Delta app
+  transactions). A crash or kill therefore never duplicates or loses changes, and the
+  integration tests SIGKILL the stream worker mid-stream to prove it.
+- **Operations:** the **Streams & Replication** page updates live over a WebSocket. It shows
+  status, connector state, lag, end-to-end latency (p50/p95), throughput and dead letters,
+  with pause, resume and re-snapshot controls. `GET /api/streams/{id}/metrics` exposes the
+  same numbers.
+- **Webhooks:** create a *Webhook* connection, issue its key (shown once; only the hash is
+  stored), then `POST /ingest/events/<stream>` with an `X-API-Key` header.
+- **Triggers:** *When files arrive* polls a file source and runs the job when new or changed
+  files appear. Interval schedules go down to 10 seconds.
+- **Freshness SLAs:** set one per dataset in the catalog. A breach opens an alert (shown on
+  Home and published to `dataplat.alerts`), which resolves after the next load.
+- **Clean-up:** streaming tables are compacted hourly. Deleting a Postgres CDC job drops its
+  replication slot and publication in the source.
+
 ### Test sources
 
 `make dev-up` (Windows: `tasks.ps1 dev-up`) starts sample sources next to the platform and
@@ -78,8 +113,8 @@ seeds them:
 | Source | Host | Credentials |
 |---|---|---|
 | Postgres | `src-postgres` | `dev` / `devsource` |
-| MySQL | `src-mysql` | `dev` / `devsource` |
-| MongoDB | `src-mongo` | `dev` / `devsource` |
+| MySQL 8.0 | `src-mysql` | `dev` / `devsource` (CDC: `root` / `devsource`) |
+| MongoDB (replica set `rs0`) | `src-mongo` | `dev` / `devsource` |
 | SFTP | `src-sftp` | `dev` / `devsource` |
 | FTP | `src-ftp` | `dev` / `devsource` |
 | SMB | `src-smb` (share `landing`) | `dev` / `devsource` |
@@ -178,5 +213,12 @@ The integration suite checks the plan's Phase 0 guarantees against the live stac
   rows are handed out once and then removed from the metadata database.
 - **Ingestion writes each batch in a single Delta commit, built in memory.** That is fine for
   laptop-sized loads. Streaming very large sources in chunks comes with Phase 1b.
+- **Debezium 2.7 (the last version on Docker Hub) doesn't support MySQL 8.4**, because 8.4
+  removed `SHOW MASTER STATUS`. The dev MySQL is 8.0; MySQL 8.4 CDC needs Debezium 3.x.
+- **Continuous streams from Kafka clusters that need credentials** aren't supported yet. The
+  stream worker has no per-service-account token flow; use scheduled append loads for those.
+  CDC (via Kafka Connect), webhooks and credential-free topics stream continuously.
+- **Webhook keys** are stored only as SHA-256 hashes, not in Vault, since there's nothing to
+  read back. A lost key is replaced by issuing a new one.
 - **Oracle** is implemented but not covered by the test suite, since there's no free Oracle
   image in the dev profile. Every other connector is tested against a real server.

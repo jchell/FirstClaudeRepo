@@ -54,6 +54,10 @@ class PlatformContext:
         return self.registry.get("job_queue")
 
     @property
+    def change_capture(self):  # -> DebeziumChangeCapture (ChangeCapture port)
+        return self.registry.get("change_capture")
+
+    @property
     def signer(self) -> TokenSigner:
         return self.registry.get("token_signer")
 

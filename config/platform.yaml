@@ -16,6 +16,7 @@ adapters:
   token_signer: vault_transit
   knowledge_graph: oxigraph
   lineage_sink: postgres
+  change_capture: debezium
 
 vault:
   addr: ${VAULT_ADDR:-http://vault:8200}
@@ -50,6 +51,10 @@ event_bus:
   bootstrap_servers: ${KAFKA_BOOTSTRAP:-redpanda:9092}
   schema_registry: ${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
 
+change_capture:
+  # Kafka Connect REST API (Debezium).
+  url: ${KAFKA_CONNECT_URL:-http://kafka-connect:8083}
+
 knowledge_graph:
   url: ${OXIGRAPH_URL:-http://oxigraph:7878}
 
@@ -70,3 +75,8 @@ worker:
 
 scheduler:
   tick_seconds: 15
+
+streaming:
+  # How often each stream records its lineage and re-profiles its table.
+  lineage_every_seconds: 300
+  profile_every_seconds: 600

@@ -54,6 +54,15 @@ class EventBusConfig(BaseModel):
     schema_registry: str | None = None
 
 
+class ChangeCaptureConfig(BaseModel):
+    url: str = "http://kafka-connect:8083"
+
+
+class StreamingConfig(BaseModel):
+    lineage_every_seconds: float = 300
+    profile_every_seconds: float = 600
+
+
 class KnowledgeGraphConfig(BaseModel):
     url: str
 
@@ -86,6 +95,8 @@ class PlatformConfig(BaseModel):
     lake: LakeConfig = LakeConfig()
     event_bus: EventBusConfig
     knowledge_graph: KnowledgeGraphConfig
+    change_capture: ChangeCaptureConfig = ChangeCaptureConfig()
+    streaming: StreamingConfig = StreamingConfig()
     auth: AuthConfig = AuthConfig()
     worker: WorkerConfig = WorkerConfig()
     scheduler: SchedulerConfig = SchedulerConfig()

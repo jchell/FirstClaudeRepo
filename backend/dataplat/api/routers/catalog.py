@@ -49,6 +49,7 @@ class DatasetOut(BaseModel):
     table_version: int | None
     last_loaded_at: datetime | None
     source_job_id: uuid.UUID | None
+    freshness_sla_minutes: int | None = None
     columns: int = 0
 
 
@@ -112,6 +113,8 @@ def dataset_detail(dataset_id: uuid.UUID, s: Session = Depends(get_session), _: 
 
 class DatasetPatch(BaseModel):
     description: str | None = None
+    # Minutes; 0 removes the SLA.
+    freshness_sla_minutes: int | None = Field(default=None, ge=0, le=60 * 24 * 90)
     owner: str | None = None
     column_descriptions: dict[str, str] = {}
 
@@ -131,6 +134,8 @@ def update_dataset(
         d.description = body.description
     if body.owner is not None:
         d.owner = body.owner
+    if body.freshness_sla_minutes is not None:
+        d.freshness_sla_minutes = body.freshness_sla_minutes or None
     for name, desc in body.column_descriptions.items():
         col = s.get(DatasetColumn, (d.id, name))
         if col is None:

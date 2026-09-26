@@ -151,10 +151,16 @@ export interface JobSpec {
     format_options?: Record<string, unknown>;
     options?: Record<string, unknown>;
   };
-  load_mode: 'full' | 'incremental' | 'append';
+  load_mode: 'full' | 'incremental' | 'append' | 'cdc' | 'stream';
   watermark_column?: string | null;
   target: { layer: 'bronze'; dataset: string };
-  schedule: { type: 'none' | 'cron' | 'interval'; cron?: string | null; interval_seconds?: number | null };
+  schedule: {
+    type: 'none' | 'cron' | 'interval' | 'file_arrival';
+    cron?: string | null;
+    interval_seconds?: number | null;
+    poll_seconds?: number | null;
+  };
+  stream?: { write_mode: 'changelog' | 'mirror'; snapshot?: 'initial' | 'never'; max_records?: number; max_seconds?: number };
   raw_vault?: unknown;
   promote_to_silver?: boolean;
 }
@@ -215,6 +221,7 @@ export interface Dataset {
   table_version: number | null;
   last_loaded_at: string | null;
   source_job_id: string | null;
+  freshness_sla_minutes: number | null;
   columns: number;
 }
 
@@ -299,4 +306,49 @@ export interface PortalApp {
   datasets: string[];
   created_by: string | null;
   created_at: string;
+}
+
+// ---------------------------------------------------------------- Phase 1b
+
+export interface StreamInfo {
+  job_id: string;
+  name: string;
+  kind: 'cdc' | 'stream';
+  connection: string | null;
+  connection_type: string | null;
+  source: string | null;
+  target: string;
+  write_mode: 'changelog' | 'mirror';
+  desired: 'running' | 'paused';
+  status: 'starting' | 'running' | 'paused' | 'failed' | 'stalled';
+  topics: string[];
+  connector: { state: string; tasks?: { id: number; state: string; trace: string[] }[] } | null;
+  lag: number | null;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  records_per_minute: number;
+  totals: { records?: number; batches?: number; dlq?: number };
+  last_batch_at: string | null;
+  heartbeat_at: string | null;
+  last_error: string | null;
+  key_columns: string[] | null;
+}
+
+export interface StreamMetrics {
+  stream: StreamInfo;
+  lag: number | null;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  series: { minute: string; records: number; batches: number; dlq: number; latency_p50_ms: number | null; latency_p95_ms: number | null; lag: number | null }[];
+}
+
+export interface AlertInfo {
+  id: number;
+  kind: string;
+  severity: 'warning' | 'serious' | 'critical';
+  target: string;
+  message: string;
+  details: Record<string, unknown>;
+  opened_at: string;
+  resolved_at: string | null;
 }

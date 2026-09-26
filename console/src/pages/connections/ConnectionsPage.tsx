@@ -69,6 +69,17 @@ export function ConnectionsPage() {
   const label = (t: string) => types.data?.find((x) => x.type === t)?.label ?? t;
   const engineer = canEngineer(user?.roles);
 
+  const [issued, setIssued] = useState<{ name: string; key: string; endpoint: string } | null>(null);
+  async function issueKey(c: Connection) {
+    if (!window.confirm(`Issue a new key for ${c.name}? The previous key stops working.`)) return;
+    try {
+      const r = await api<{ key: string; endpoint: string }>(`/api/connections/${c.id}/webhook-key`, { method: 'POST' });
+      setIssued({ name: c.name, key: r.key, endpoint: r.endpoint });
+    } catch (e) {
+      notifications.show({ color: 'red', message: (e as Error).message });
+    }
+  }
+
   const remove = useMutation({
     mutationFn: (id: string) => api(`/api/connections/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connections'] }),
@@ -142,6 +153,11 @@ export function ConnectionsPage() {
                 <Table.Td>
                   {engineer && (
                     <Group gap="xs" justify="flex-end" wrap="nowrap">
+                      {c.type === 'webhook' && (
+                        <Button size="xs" variant="light" color="grape" onClick={() => issueKey(c)}>
+                          New key
+                        </Button>
+                      )}
                       <Button
                         size="xs"
                         variant="light"
@@ -180,6 +196,17 @@ export function ConnectionsPage() {
         </Table>
       )}
       {editing && <ConnectionModal connection={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
+      <Modal opened={!!issued} onClose={() => setIssued(null)} title={`Webhook key for ${issued?.name}`}>
+        <Stack>
+          <Alert icon={<IconLock size={16} />} color="yellow" variant="light">
+            Copy it now: it is shown once. Only its hash is stored.
+          </Alert>
+          <TextInput label="X-API-Key" value={issued?.key ?? ''} readOnly onFocus={(e) => e.currentTarget.select()} ff="monospace" />
+          <Text size="sm">
+            POST JSON events (one object or an array) to <code>{location.origin}{issued?.endpoint}</code>
+          </Text>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }

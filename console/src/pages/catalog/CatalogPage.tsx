@@ -158,6 +158,10 @@ export function DatasetPage() {
     mutationFn: () => api<Preview>(`/api/catalog/datasets/${datasetId}/preview?limit=50`),
     onSuccess: setPreview,
   });
+  const saveSla = useMutation({
+    mutationFn: (minutes: number) => api(`/api/catalog/datasets/${datasetId}`, { method: 'PATCH', body: json({ freshness_sla_minutes: minutes }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['dataset', datasetId] }),
+  });
   const saveDescription = useMutation({
     mutationFn: (d: string) => api(`/api/catalog/datasets/${datasetId}`, { method: 'PATCH', body: json({ description: d }) }),
     onSuccess: () => {
@@ -219,8 +223,25 @@ export function DatasetPage() {
           )}
         </Paper>
         <Paper withBorder p="sm">
-          <Text size="xs" c="dimmed">Last loaded</Text>
+          <Text size="xs" c="dimmed">Last loaded · freshness SLA</Text>
           <Text fw={600}>{fmtTime(d.last_loaded_at)}</Text>
+          <Group gap={4}>
+            <Text size="xs" c="dimmed">
+              {d.freshness_sla_minutes ? `alert after ${d.freshness_sla_minutes} min` : 'no SLA'}
+            </Text>
+            {canEdit && (
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                onClick={() => {
+                  const v = window.prompt('Alert when not loaded for how many minutes? (0 removes the SLA)', String(d.freshness_sla_minutes ?? 60));
+                  if (v !== null && /^\d+$/.test(v.trim())) saveSla.mutate(Number(v.trim()));
+                }}
+              >
+                Set
+              </Button>
+            )}
+          </Group>
         </Paper>
       </SimpleGrid>
       <Code>{d.uri}</Code>

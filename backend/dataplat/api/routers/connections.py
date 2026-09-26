@@ -228,6 +228,16 @@ def update_connection(
     conn.config = _apply(ctx, s, conn, config, body.secrets)
     if body.description is not None:
         conn.description = body.description
+    if body.secrets:
+        # Debezium reads credentials when a connector starts: restart CDC connectors on rotation.
+        from dataplat.streaming.debezium import connector_name
+
+        for job in s.scalars(select(IngestionJob).where(IngestionJob.connection_id == conn.id)):
+            if job.spec.get("load_mode") == "cdc" and job.enabled:
+                try:
+                    ctx.change_capture.restart(connector_name(job.id))
+                except Exception:
+                    pass  # the stream page shows the connector state
     audit.record(
         s,
         actor=actor.name,
