@@ -238,6 +238,12 @@ class IngestionRunner:
                 "table_version": result.get("table_version"),
             }
         self._publish({"type": "ingestion.run", "job": job_name, **summary})
+        if result["rows_written"]:
+            from dataplat.transform.triggers import notify_updated
+
+            summary["queued"] = notify_updated(
+                self.ctx, [f"{spec.target.layer}.{spec.target.dataset}"], trigger=f"ingest:{job_name}"
+            )
         return summary
 
     # ---------------------------------------------------------------- steps

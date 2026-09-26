@@ -186,7 +186,7 @@ def test_job_validation(client: TestClient, files_conn: str) -> None:
             "target": {"layer": "bronze", "dataset": "x"},
             "schedule": {"type": "cron", "cron": "nope"},
         },
-        {"source": {"path_template": "/a"}, "target": {"layer": "bronze", "dataset": "x"}, "promote_to_silver": True},
+        {"source": {"path_template": "/a"}, "target": {"layer": "bronze", "dataset": "x"}, "raw_vault": {"hub": {}}},
     ]
     for spec in bad:
         r = client.post(

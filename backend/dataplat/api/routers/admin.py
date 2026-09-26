@@ -124,7 +124,10 @@ def list_users(s: Session = Depends(get_session, scope="function"), _: Principal
 
 @router.post("/users", response_model=UserOut, status_code=201)
 def create_user(
-    body: UserCreate, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(admin_only)
+    body: UserCreate,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    actor: Principal = Depends(admin_only),
 ):
     _check_roles(s, body.roles)
     user = User(
@@ -255,7 +258,10 @@ def list_groups(s: Session = Depends(get_session, scope="function"), _: Principa
 
 @router.post("/groups", response_model=GroupOut, status_code=201)
 def create_group(
-    body: GroupIn, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(admin_only)
+    body: GroupIn,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    actor: Principal = Depends(admin_only),
 ):
     g = Group(name=body.name, description=body.description)
     s.add(g)
@@ -331,7 +337,9 @@ def _sa_out(row: ServiceAccount) -> ServiceAccountOut:
 
 
 @router.get("/service-accounts", response_model=list[ServiceAccountOut])
-def list_service_accounts(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(require_roles("engineer"))):
+def list_service_accounts(
+    s: Session = Depends(get_session, scope="function"), _: Principal = Depends(require_roles("engineer"))
+):
     return [_sa_out(r) for r in s.scalars(select(ServiceAccount).order_by(ServiceAccount.name))]
 
 
@@ -491,7 +499,9 @@ class SettingIn(BaseModel):
 
 
 @router.get("/settings")
-def list_settings(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(admin_only)) -> dict[str, Any]:
+def list_settings(
+    s: Session = Depends(get_session, scope="function"), _: Principal = Depends(admin_only)
+) -> dict[str, Any]:
     return {r.key: r.value for r in s.scalars(select(PlatformSetting).order_by(PlatformSetting.key))}
 
 

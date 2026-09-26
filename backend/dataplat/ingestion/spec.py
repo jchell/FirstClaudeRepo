@@ -7,9 +7,10 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from apscheduler.triggers.cron import CronTrigger
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from dataplat.connectors.base import JobMode
+from dataplat.vault.model import RawVaultSpec
 
 DATASET_NAME = r"^[a-z][a-z0-9_]{1,62}$"
 
@@ -67,16 +68,10 @@ class JobSpec(BaseModel):
     target: TargetSpec
     schedule: ScheduleSpec = ScheduleSpec()
     stream: StreamSpec = StreamSpec()
-    # Phase 2 options, accepted now so specs stay forward compatible.
-    raw_vault: dict[str, Any] | None = None
+    # "Add to Raw Vault": hub/satellite/link mappings created for the target dataset.
+    raw_vault: RawVaultSpec | None = None
+    # Keep a cleaned silver copy (audit columns dropped), rebuilt whenever bronze changes.
     promote_to_silver: bool = False
-
-    @field_validator("promote_to_silver")
-    @classmethod
-    def _phase2(cls, v: bool) -> bool:
-        if v:
-            raise ValueError("promotion to silver arrives in Phase 2")
-        return v
 
 
 CDC_TYPES = {"postgres", "mysql", "sqlserver", "mongodb"}

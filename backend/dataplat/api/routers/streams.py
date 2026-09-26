@@ -112,7 +112,10 @@ def _job(s: Session, job_id: uuid.UUID) -> IngestionJob:
 
 @router.get("/api/streams/{job_id}/metrics")
 def stream_metrics(
-    job_id: uuid.UUID, minutes: int = 60, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+    job_id: uuid.UUID,
+    minutes: int = 60,
+    s: Session = Depends(get_session, scope="function"),
+    _: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
     """Current lag and latency plus a per-minute series (records, dead letters, latency, lag)."""
     job = _job(s, job_id)
@@ -289,7 +292,10 @@ class WebhookKeyOut(BaseModel):
 
 @router.post("/api/connections/{connection_id}/webhook-key", response_model=WebhookKeyOut)
 def new_webhook_key(
-    connection_id: uuid.UUID, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(engineer)
+    connection_id: uuid.UUID,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    actor: Principal = Depends(engineer),
 ):
     conn = s.get(Connection, connection_id)
     if conn is None or conn.type != "webhook":
@@ -381,7 +387,12 @@ def list_alerts(
 
 
 @router.post("/api/alerts/{alert_id}/resolve", response_model=AlertOut)
-def resolve(alert_id: int, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(engineer)):
+def resolve(
+    alert_id: int,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    actor: Principal = Depends(engineer),
+):
     a = s.get(Alert, alert_id)
     if a is None:
         raise HTTPException(404, "alert not found")

@@ -27,6 +27,7 @@ from dataplat.db.models import (
     PortalApp,
     SchemaChange,
 )
+from dataplat.lineage.columns import annotate_status, batch_trace, build_column_graph, impact, trace
 from dataplat.lineage.graph import build_graph, subgraph
 
 router = APIRouter(prefix="/api", tags=["catalog"])
@@ -89,7 +90,11 @@ def search_datasets(
 
 
 @router.get("/catalog/datasets/{dataset_id}", response_model=DatasetDetail)
-def dataset_detail(dataset_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
+def dataset_detail(
+    dataset_id: uuid.UUID,
+    s: Session = Depends(get_session, scope="function"),
+    _: Principal = Depends(current_principal),
+):
     d = s.get(Dataset, dataset_id)
     if d is None:
         raise HTTPException(404, "dataset not found")
@@ -167,7 +172,10 @@ def preview_dataset(
 
 @router.get("/catalog/datasets/{dataset_id}/profiles")
 def profile_history(
-    dataset_id: uuid.UUID, limit: int = 30, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+    dataset_id: uuid.UUID,
+    limit: int = 30,
+    s: Session = Depends(get_session, scope="function"),
+    _: Principal = Depends(current_principal),
 ) -> list[dict[str, Any]]:
     rows = s.scalars(
         select(DatasetProfile)
@@ -203,7 +211,71 @@ def lineage_graph(
         if not any(n["id"] == node for n in g["nodes"]):
             raise HTTPException(404, "node not in the lineage graph")
         g = subgraph(g, node, direction, min(max(depth, 1), 50))
-    return g
+    return annotate_status(s, g) if as_of is None else g
+
+
+@router.get("/lineage/columns")
+def lineage_columns(
+    dataset: str,
+    as_of: datetime | None = None,
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
+    _: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Column nodes of a dataset node, with their direct upstream/downstream columns."""
+    g = build_column_graph(s, ctx.config.lake.model_dump(), as_of)
+    cols = [n for n in g["nodes"] if n["dataset_node"] == dataset]
+    ids = {n["id"] for n in cols}
+    return {
+        "columns": cols,
+        "upstream": [e for e in g["edges"] if e["target"] in ids],
+        "downstream": [e for e in g["edges"] if e["source"] in ids],
+    }
+
+
+@router.get("/lineage/trace")
+def lineage_trace(
+    column: str,
+    direction: Literal["upstream", "downstream"] = "upstream",
+    as_of: datetime | None = None,
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
+    _: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """How does this column get its value (upstream), or where does it flow (downstream)?"""
+    g = build_column_graph(s, ctx.config.lake.model_dump(), as_of)
+    if not any(n["id"] == column for n in g["nodes"]):
+        raise HTTPException(404, "column not in the lineage graph")
+    return trace(g, column, direction)
+
+
+@router.get("/lineage/impact")
+def lineage_impact(
+    node: str,
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
+    _: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """What is affected if this source/table/column changes or fails."""
+    lake = ctx.config.lake.model_dump()
+    tg = annotate_status(s, build_graph(s, lake))
+    cg = build_column_graph(s, lake)
+    known = {n["id"] for n in tg["nodes"]} | {n["id"] for n in cg["nodes"]}
+    if node not in known:
+        raise HTTPException(404, "node not in the lineage graph")
+    return impact(tg, cg, node)
+
+
+@router.get("/lineage/batch/{batch_id}")
+def lineage_batch(
+    batch_id: str,
+    s: Session = Depends(get_session, scope="function"),
+    ctx: PlatformContext = Depends(get_ctx),
+    _: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{32}", batch_id):
+        raise HTTPException(422, "batch ids are 32 hex characters")
+    return batch_trace(s, ctx.tables, ctx.config.lake.model_dump(), batch_id)
 
 
 # ---------------------------------------------------------------- ops dashboard

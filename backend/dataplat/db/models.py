@@ -472,3 +472,137 @@ class Alert(Base):
     details: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# ================================================================ Phase 2: data vault & transform
+
+
+class VaultObject(Base):
+    """A Data Vault 2.0 object: hub, link, satellite, or a business-vault PIT/bridge."""
+
+    __tablename__ = "vault_objects"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    kind: Mapped[str] = mapped_column(String(16))  # hub|link|sat|pit|bridge
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    definition: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class VaultMapping(Base):
+    """Which source columns load a hub, link or satellite."""
+
+    __tablename__ = "vault_mappings"
+    __table_args__ = (
+        Index("uq_vault_mappings_source_target", "source_layer", "source_dataset", "target_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    source_layer: Mapped[str] = mapped_column(String(16), default="bronze")
+    source_dataset: Mapped[str] = mapped_column(String(256))
+    target_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vault_objects.id", ondelete="CASCADE"), index=True)
+    # hub: {business key: column}; link: {"<role>.<business key>": column};
+    # sat: the parent's keys in the same form.
+    keys: Mapped[dict[str, str]] = mapped_column(Json, default=dict)
+    # sat only: {attribute: column}
+    attributes: Mapped[dict[str, str]] = mapped_column(Json, default=dict)
+    record_source: Mapped[str | None] = mapped_column(String(256))
+    ingestion_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ingestion_jobs.id", ondelete="SET NULL"), index=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VaultLoadState(Base):
+    """High-water mark (source _load_ts) per mapping: rows at or below it are loaded."""
+
+    __tablename__ = "vault_load_state"
+
+    mapping_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vault_mappings.id", ondelete="CASCADE"), primary_key=True)
+    high_water: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_rows: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class TransformModel(Base):
+    """A silver/gold model: SQL, or a declarative SCD2 dimension, fact or date dimension."""
+
+    __tablename__ = "transform_models"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    layer: Mapped[str] = mapped_column(String(16))  # silver|gold
+    kind: Mapped[str] = mapped_column(String(32), default="sql")  # sql|scd2_dimension|fact|date_dimension
+    sql: Mapped[str] = mapped_column(Text, default="")
+    config: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    description: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    owner: Mapped[str | None] = mapped_column(String(128))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TransformModelVersion(Base):
+    __tablename__ = "transform_model_versions"
+
+    model_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("transform_models.id", ondelete="CASCADE"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    sql: Mapped[str] = mapped_column(Text, default="")
+    config: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Pipeline(Base):
+    """A set of models run in dependency order, on a schedule and/or when inputs change."""
+
+    __tablename__ = "pipelines"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    models: Mapped[list[str]] = mapped_column(Json, default=list)
+    schedule: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    # Run whenever any of these datasets ("<layer>.<name>") gets new data.
+    trigger_datasets: Mapped[list[str]] = mapped_column(Json, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TransformRun(Base):
+    """One vault load, model build, pipeline run or serving sync."""
+
+    __tablename__ = "transform_runs"
+    __table_args__ = (Index("ix_transform_runs_target", "kind", "target", "started_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    kind: Mapped[str] = mapped_column(String(32))  # vault_load|vault_build|model|pipeline
+    target: Mapped[str] = mapped_column(String(256))
+    pipeline_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("pipelines.id", ondelete="SET NULL"), index=True)
+    parent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    trigger: Mapped[str] = mapped_column(String(32), default="manual")
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|succeeded|failed|skipped
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger)
+    rows_written: Mapped[int] = mapped_column(BigInteger, default=0)
+    table_version: Mapped[int | None] = mapped_column(BigInteger)
+    lineage_run_id: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)

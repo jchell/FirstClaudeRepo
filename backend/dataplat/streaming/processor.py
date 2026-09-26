@@ -44,6 +44,7 @@ from dataplat.lineage.openlineage import dataset as ol_dataset
 from dataplat.lineage.openlineage import run_event
 from dataplat.quality.profiler import profile
 from dataplat.streaming.debezium import cdc_topic
+from dataplat.transform.triggers import notify_updated
 
 log = logging.getLogger(__name__)
 
@@ -260,6 +261,8 @@ class StreamRunner(threading.Thread):
                 version = self.ctx.tables.write(table, p.uri, "append", app_transactions=txns)
             written = table.num_rows
             self._after_write(table, version)
+            # Raw vault and downstream models follow each micro-batch.
+            notify_updated(self.ctx, [f"{p.spec.target.layer}.{p.spec.target.dataset}"], trigger=f"stream:{p.job_name}")
         # Kafka offsets are committed only after Delta has the data (and the offsets). A batch
         # of nothing but dead letters commits Kafka offsets only; they are never re-read.
         self._consumer.commit(

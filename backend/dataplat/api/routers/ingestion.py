@@ -32,6 +32,9 @@ from dataplat.db.models import (
 )
 from dataplat.ingestion.spec import JobSpec, decode_watermark, is_continuous, validate_for_category
 from dataplat.streaming.debezium import build_config, connector_name
+from dataplat.transform.service import DefinitionError, ensure_promotion
+from dataplat.vault.loader import VaultError
+from dataplat.vault.service import apply_raw_vault
 
 router = APIRouter(prefix="/api/ingestion", tags=["ingestion"])
 engineer = require_roles("engineer")
@@ -173,6 +176,17 @@ def _sync_stream(ctx: PlatformContext, s: Session, job: IngestionJob, spec: JobS
             raise HTTPException(502, f"Kafka Connect: {e}") from e
 
 
+def _sync_transform(s: Session, job: IngestionJob, spec: JobSpec, user: str) -> None:
+    """The wizard's "Add to Raw Vault" and "promote to silver" options."""
+    try:
+        if spec.raw_vault is not None:
+            apply_raw_vault(s, spec.raw_vault, spec.target.dataset, job.id, user)
+        if spec.promote_to_silver:
+            ensure_promotion(s, spec.target.dataset, job.id, user)
+    except (VaultError, DefinitionError) as e:
+        raise HTTPException(422, str(e)) from e
+
+
 def _sync_schedule(s: Session, job: IngestionJob, spec: JobSpec, conn: Connection) -> None:
     sched = s.get(Schedule, job.schedule_id) if job.schedule_id else None
     if spec.schedule.type == "none" or is_continuous(spec):
@@ -209,7 +223,9 @@ def list_jobs(s: Session = Depends(get_session, scope="function"), _: Principal 
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
+def get_job(
+    job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+):
     j = s.get(IngestionJob, job_id)
     if j is None:
         raise HTTPException(404, "job not found")
@@ -241,6 +257,7 @@ def create_job(
         raise HTTPException(409, "a job with that name exists") from e
     s.add(IngestionJobVersion(job_id=job.id, version=1, spec=job.spec, created_by=actor.name))
     conn = s.get(Connection, body.connection_id)
+    _sync_transform(s, job, spec, actor.name)
     _sync_schedule(s, job, spec, conn)
     _sync_stream(ctx, s, job, spec, conn)
     audit.record(s, actor=actor.name, action="ingestion_job.create", target=job.name, ip=client_ip(request))
@@ -271,6 +288,7 @@ def update_job(
         job.spec = new_spec
         s.add(IngestionJobVersion(job_id=job.id, version=job.version, spec=new_spec, created_by=actor.name))
     conn = s.get(Connection, job.connection_id)
+    _sync_transform(s, job, spec, actor.name)
     _sync_schedule(s, job, spec, conn)
     _sync_stream(ctx, s, job, spec, conn)
     audit.record(
@@ -319,7 +337,9 @@ def delete_job(
 
 
 @router.get("/jobs/{job_id}/versions")
-def job_versions(job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
+def job_versions(
+    job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+):
     rows = s.scalars(
         select(IngestionJobVersion)
         .where(IngestionJobVersion.job_id == job_id)
@@ -359,7 +379,10 @@ def run_now(
 
 @router.post("/jobs/{job_id}/reset-state", status_code=204)
 def reset_state(
-    job_id: uuid.UUID, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(engineer)
+    job_id: uuid.UUID,
+    request: Request,
+    s: Session = Depends(get_session, scope="function"),
+    actor: Principal = Depends(engineer),
 ):
     """Forgets the watermark and ingested-file list, so the next run starts from scratch."""
     job = s.get(IngestionJob, job_id)
@@ -392,7 +415,9 @@ def list_runs(
 
 
 @router.get("/runs/{run_id}", response_model=RunOut)
-def get_run(run_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
+def get_run(
+    run_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+):
     r = s.get(IngestionRun, run_id)
     if r is None:
         raise HTTPException(404, "run not found")

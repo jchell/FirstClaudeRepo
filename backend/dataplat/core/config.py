@@ -44,6 +44,7 @@ class LakeConfig(BaseModel):
     bronze: str = "s3://bronze"
     silver: str = "s3://silver"
     gold: str = "s3://gold"
+    vault: str = "s3://vault"  # raw vault + business vault (PIT, bridge)
 
     def uri(self, layer: str, name: str) -> str:
         return f"{getattr(self, layer).rstrip('/')}/{name}"
@@ -61,6 +62,10 @@ class ChangeCaptureConfig(BaseModel):
 class StreamingConfig(BaseModel):
     lineage_every_seconds: float = 300
     profile_every_seconds: float = 600
+
+
+class ServingConfig(BaseModel):
+    database: str = "serving"
 
 
 class KnowledgeGraphConfig(BaseModel):
@@ -97,6 +102,7 @@ class PlatformConfig(BaseModel):
     knowledge_graph: KnowledgeGraphConfig
     change_capture: ChangeCaptureConfig = ChangeCaptureConfig()
     streaming: StreamingConfig = StreamingConfig()
+    serving: ServingConfig = ServingConfig()
     auth: AuthConfig = AuthConfig()
     worker: WorkerConfig = WorkerConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
