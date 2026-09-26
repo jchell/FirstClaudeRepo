@@ -4,8 +4,10 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 import { ADMIN_TABS } from '../../nav';
 import { AuditPage } from './AuditPage';
 import { GroupsPage } from './GroupsPage';
+import { NotificationsPage } from './NotificationsPage';
 import { ServiceAccountsPage } from './ServiceAccountsPage';
 import { UsersPage } from './UsersPage';
+import { VaultAuditPage } from './VaultAuditPage';
 
 export function AdminPage() {
   const location = useLocation();
@@ -30,6 +32,8 @@ export function AdminPage() {
         <Route path="groups" element={<GroupsPage />} />
         <Route path="service-accounts" element={<ServiceAccountsPage />} />
         <Route path="audit" element={<AuditPage />} />
+        <Route path="vault-audit" element={<VaultAuditPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
       </Routes>
     </Stack>
   );

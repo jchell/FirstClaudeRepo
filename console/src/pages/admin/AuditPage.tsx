@@ -17,6 +17,18 @@ const ACTIONS = [
   'secret.delete',
   'job.submit',
   'setting.update',
+  'dataset.preview',
+  'data.query',
+  'tag.assign',
+  'tag.accept',
+  'tag.reject',
+  'masking.create',
+  'masking.update',
+  'row_filter.create',
+  'grant.create',
+  'grant.delete',
+  'dq.rule.create',
+  'notifications.create',
 ];
 
 export function AuditPage() {

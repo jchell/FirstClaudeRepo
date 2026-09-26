@@ -20,7 +20,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconBook2, IconSearch } from '@tabler/icons-react';
+import { IconBook2, IconEyeOff, IconLock, IconSearch } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
@@ -29,6 +29,8 @@ import { api, json } from '../../api/client';
 import { fmtBytes, fmtNumber, fmtTime } from '../../api/tasks';
 import type { ColumnProfile, Dataset, DatasetDetail, Preview } from '../../api/types';
 import { PreviewTable } from '../ingestion/JobWizard';
+import { DatasetQuality } from '../quality/QualityPage';
+import { GlossaryLinks, QueryPanel, TagChips } from './DatasetGovernance';
 
 const LineageView = lazy(() => import('../lineage/LineagePage').then((m) => ({ default: m.LineageView })));
 
@@ -153,6 +155,7 @@ export function DatasetPage() {
   const roles = user?.roles ?? [];
   const canPreview = ['admin', 'engineer', 'analyst', 'steward'].some((r) => roles.includes(r));
   const canEdit = ['admin', 'engineer', 'steward'].some((r) => roles.includes(r));
+  const steward = ['admin', 'steward'].some((r) => roles.includes(r));
 
   const loadPreview = useMutation({
     mutationFn: () => api<Preview>(`/api/catalog/datasets/${datasetId}/preview?limit=50`),
@@ -160,6 +163,10 @@ export function DatasetPage() {
   });
   const saveSla = useMutation({
     mutationFn: (minutes: number) => api(`/api/catalog/datasets/${datasetId}`, { method: 'PATCH', body: json({ freshness_sla_minutes: minutes }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['dataset', datasetId] }),
+  });
+  const saveDomain = useMutation({
+    mutationFn: (domain: string) => api(`/api/catalog/datasets/${datasetId}`, { method: 'PATCH', body: json({ domain }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['dataset', datasetId] }),
   });
   const saveDescription = useMutation({
@@ -183,7 +190,44 @@ export function DatasetPage() {
         <Badge color={LAYER_COLOR[d.layer]} variant="light">
           {d.layer}
         </Badge>
+        {d.restricted && (
+          <Tooltip label="Access is limited to granted roles and users">
+            <Badge variant="outline" color="gray" leftSection={<IconLock size={11} aria-hidden />}>
+              restricted
+            </Badge>
+          </Tooltip>
+        )}
+        <Badge variant="outline" color="gray">
+          domain: {d.domain ?? 'none'}
+        </Badge>
+        {steward && (
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            onClick={() => {
+              const v = window.prompt('Business domain (drives access grants; empty removes it)', d.domain ?? '');
+              if (v !== null) saveDomain.mutate(v.trim());
+            }}
+          >
+            Set domain
+          </Button>
+        )}
       </Group>
+      <Group gap="md">
+        <Group gap={6}>
+          <Text size="xs" c="dimmed">Tags:</Text>
+          <TagChips d={d} column={null} steward={steward} />
+        </Group>
+        <GlossaryLinks d={d} canLink={canEdit} />
+      </Group>
+      {(Object.keys(d.masked_columns).length > 0 || d.row_filtered) && (
+        <Alert variant="light" color="gray" icon={<IconEyeOff size={16} />}>
+          Your access policies apply here:{' '}
+          {Object.keys(d.masked_columns).length > 0 && `${Object.keys(d.masked_columns).join(', ')} masked`}
+          {Object.keys(d.masked_columns).length > 0 && d.row_filtered && '; '}
+          {d.row_filtered && 'rows filtered'}.
+        </Alert>
+      )}
       {description === null ? (
         <Group gap="xs">
           <Text c={d.description ? undefined : 'dimmed'}>{d.description || 'No description yet.'}</Text>
@@ -213,7 +257,7 @@ export function DatasetPage() {
           </Text>
         </Paper>
         <Paper withBorder p="sm">
-          <Text size="xs" c="dimmed">Loaded by</Text>
+          <Text size="xs" c="dimmed">Loaded by · DQ score</Text>
           {d.source_job_id ? (
             <Anchor component={Link} to={`/ingestion/${d.source_job_id}`}>
               {d.source_job}
@@ -221,6 +265,11 @@ export function DatasetPage() {
           ) : (
             <Text>—</Text>
           )}
+          <Text size="xs" c="dimmed">
+            {d.dq
+              ? `DQ ${d.dq.score == null ? 'not run' : d.dq.score.toFixed(1)} · ${d.dq.rules} rules${d.dq.failing ? `, ${d.dq.failing} failing` : ''}`
+              : 'no DQ rules'}
+          </Text>
         </Paper>
         <Paper withBorder p="sm">
           <Text size="xs" c="dimmed">Last loaded · freshness SLA</Text>
@@ -251,6 +300,8 @@ export function DatasetPage() {
           <Tabs.Tab value="columns">Columns & profile</Tabs.Tab>
           <Tabs.Tab value="changes">Schema changes ({d.schema_changes.length})</Tabs.Tab>
           {canPreview && <Tabs.Tab value="preview">Preview</Tabs.Tab>}
+          <Tabs.Tab value="quality">Quality</Tabs.Tab>
+          {canPreview && <Tabs.Tab value="query">Query</Tabs.Tab>}
           <Tabs.Tab value="lineage">Lineage</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="columns" pt="sm">
@@ -263,6 +314,7 @@ export function DatasetPage() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Column</Table.Th>
+                <Table.Th>Tags</Table.Th>
                 <Table.Th>Type</Table.Th>
                 <Table.Th>Nulls</Table.Th>
                 <Table.Th>Distinct</Table.Th>
@@ -283,6 +335,7 @@ export function DatasetPage() {
                         {c.is_audit && <Text size="xs" c="dimmed">audit column</Text>}
                         {c.description && <Text size="xs">{c.description}</Text>}
                       </Table.Td>
+                      <Table.Td>{!c.is_audit && <TagChips d={d} column={c.name} steward={steward} />}</Table.Td>
                       <Table.Td>
                         <Code>{c.data_type}</Code>
                       </Table.Td>
@@ -325,6 +378,14 @@ export function DatasetPage() {
             <Text size="xs" c="dimmed" mt="xs">
               Previews are recorded in the audit log.
             </Text>
+          </Tabs.Panel>
+        )}
+        <Tabs.Panel value="quality" pt="sm">
+          <DatasetQuality datasetId={d.id} />
+        </Tabs.Panel>
+        {canPreview && (
+          <Tabs.Panel value="query" pt="sm">
+            <QueryPanel d={d} />
           </Tabs.Panel>
         )}
         <Tabs.Panel value="lineage" pt="sm">

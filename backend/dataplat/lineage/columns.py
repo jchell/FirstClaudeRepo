@@ -307,3 +307,28 @@ def mask_graph(graph: dict[str, Any], hidden: set[str]) -> dict[str, Any]:
             for st in graph["steps"]
         ]
     return out
+
+
+def annotate_governance(s: Session, graph: dict[str, Any]) -> dict[str, Any]:
+    """Adds active tags and the DQ score to dataset nodes (for the node details panel)."""
+    import uuid as _uuid
+
+    from dataplat.db.models import TagAssignment
+    from dataplat.quality.summary import dataset_dq
+
+    ids = [n["dataset_id"] for n in graph["nodes"] if n.get("type") == "dataset" and n.get("dataset_id")]
+    if not ids:
+        return graph
+    tags: dict[str, set[str]] = {}
+    for a in s.scalars(
+        select(TagAssignment).where(
+            TagAssignment.dataset_id.in_([_uuid.UUID(i) for i in ids]), TagAssignment.status == "active"
+        )
+    ):
+        tags.setdefault(str(a.dataset_id), set()).add(a.tag)
+    for n in graph["nodes"]:
+        if n.get("dataset_id"):
+            n["tags"] = sorted(tags.get(n["dataset_id"], ()))
+            dq = dataset_dq(s, _uuid.UUID(n["dataset_id"]))
+            n["dq_score"] = dq["score"] if dq else None
+    return graph

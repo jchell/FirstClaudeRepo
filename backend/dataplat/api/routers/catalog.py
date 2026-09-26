@@ -38,7 +38,15 @@ from dataplat.db.models import (
     SchemaChange,
     TagAssignment,
 )
-from dataplat.lineage.columns import annotate_status, batch_trace, build_column_graph, impact, mask_graph, trace
+from dataplat.lineage.columns import (
+    annotate_governance,
+    annotate_status,
+    batch_trace,
+    build_column_graph,
+    impact,
+    mask_graph,
+    trace,
+)
 from dataplat.lineage.graph import build_graph, subgraph
 from dataplat.quality.summary import dataset_dq
 from dataplat.security.policy import PolicyEngine, mask_profile, read_secured
@@ -314,7 +322,7 @@ def lineage_graph(
             raise HTTPException(404, "node not in the lineage graph")
         g = subgraph(g, node, direction, min(max(depth, 1), 50))
     g = annotate_status(s, g) if as_of is None else g
-    return mask_graph(g, hidden)
+    return mask_graph(annotate_governance(s, g), hidden)
 
 
 def _hidden(table_graph: dict[str, Any], policy: PolicyEngine) -> set[str]:

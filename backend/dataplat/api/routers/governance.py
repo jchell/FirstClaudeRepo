@@ -383,6 +383,12 @@ def unlink_term(
 # ---------------------------------------------------------------- access grants
 
 
+@router.get("/roles")
+def list_roles(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(steward)):
+    """Role names, for choosing grantees and exempt roles."""
+    return [{"name": r.name, "description": r.description} for r in s.scalars(select(Role).order_by(Role.name))]
+
+
 class GrantIn(BaseModel):
     target_type: Literal["dataset", "domain"]
     target: str = Field(min_length=1, max_length=256)  # dataset id or domain name
