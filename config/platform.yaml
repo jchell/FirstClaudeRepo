@@ -1,0 +1,65 @@
+# Platform configuration. Picks one adapter per port and configures it.
+# Swapping infrastructure (e.g. MinIO -> S3, Vault -> Azure Key Vault) means changing
+# the adapter name here and its settings block, not code.
+#
+# Values support ${ENV_VAR:-default} interpolation. This file must never contain a
+# secret. Credentials are referenced as vault://<mount>/<path>#<key>.
+
+adapters:
+  secret_store: vault
+  object_store: minio
+  query_engine: duckdb
+  metadata_store: postgres
+  event_bus: redpanda
+  job_queue: postgres
+  token_signer: vault_transit
+  knowledge_graph: oxigraph
+  lineage_sink: postgres
+
+vault:
+  addr: ${VAULT_ADDR:-http://vault:8200}
+  # AppRole credentials are file-mounted per service by docker compose.
+  approle_dir: ${DATAPLAT_APPROLE_DIR:-/run/secrets/dataplat}
+  kv_mount: kv
+  kv_prefix: dataplat
+  transit_mount: transit
+  database_mount: database
+  sa_token_role: sa-job
+
+postgres:
+  host: ${POSTGRES_HOST:-postgres}
+  port: ${POSTGRES_PORT:-5432}
+  database: dataplat
+  # Dynamic, auto-expiring credentials from Vault's database secrets engine.
+  vault_role: dataplat-app
+
+object_store:
+  endpoint: ${OBJECT_STORE_ENDPOINT:-http://minio:9000}
+  credentials: vault://kv/dataplat/platform/minio#root_user
+  secret: vault://kv/dataplat/platform/minio#root_password
+  buckets: [bronze, silver, gold, extracts, staging]
+
+event_bus:
+  bootstrap_servers: ${KAFKA_BOOTSTRAP:-redpanda:9092}
+  schema_registry: ${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
+
+knowledge_graph:
+  url: ${OXIGRAPH_URL:-http://oxigraph:7878}
+
+auth:
+  jwt_key: dataplat-jwt
+  issuer: dataplat
+  audience: dataplat-console
+  access_token_ttl_seconds: 900
+  refresh_token_ttl_seconds: 604800
+  max_failed_logins: 5
+  lockout_minutes: 15
+  # Set to true when the console is served over HTTPS.
+  secure_cookies: ${DATAPLAT_SECURE_COOKIES:-false}
+
+worker:
+  poll_interval_seconds: 2
+  max_attempts: 3
+
+scheduler:
+  tick_seconds: 15

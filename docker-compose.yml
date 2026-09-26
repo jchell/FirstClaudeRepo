@@ -1,0 +1,237 @@
+# Laptop runtime for the data platform. Start it with scripts/tasks.ps1 (Windows) or
+# make (Linux/macOS), which run the Vault bootstrap/unseal steps in the right order:
+#   init -> first-time setup,  up -> start + unseal,  down -> stop.
+#
+# Infrastructure ports are published on 127.0.0.1 only.
+
+name: dataplat
+
+x-backend: &backend
+  image: dataplat-backend:dev
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  restart: unless-stopped
+  environment:
+    DATAPLAT_CONFIG: /app/config/platform.yaml
+    DATAPLAT_SECURE_COOKIES: ${DATAPLAT_SECURE_COOKIES:-false}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  depends_on: &backend-deps
+    vault:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+    redpanda:
+      condition: service_healthy
+
+services:
+  # ------------------------------------------------------------------ infrastructure
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dataplat
+      # One-time bootstrap password; Vault rotates it on first setup and owns it from then on.
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres/bootstrap_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ${DATAPLAT_HOME:?run via tasks.ps1 or make, or set DATAPLAT_HOME}/postgres:/run/secrets/postgres:ro
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dataplat"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    # Community build of MinIO (the upstream image is no longer published on Docker Hub).
+    image: pgsty/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio/root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio/root_password
+    volumes:
+      - miniodata:/data
+      - ${DATAPLAT_HOME:?}/minio:/run/secrets/minio:ro
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:9000/minio/health/live || mc ready local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  vault:
+    image: hashicorp/vault:1.17
+    restart: unless-stopped
+    command: server
+    cap_add: [IPC_LOCK]
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+    volumes:
+      - ./infra/vault/vault.hcl:/vault/config/vault.hcl:ro
+      - vaultdata:/vault/file
+      - vaultlogs:/vault/logs
+    ports: ["127.0.0.1:8200:8200"]
+    healthcheck:
+      # Healthy only once initialized and unsealed; services wait for this.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/health >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 1000
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --pandaproxy-addr=internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr=internal://redpanda:8082,external://localhost:18082
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+    volumes:
+      - redpandadata:/var/lib/redpanda/data
+    ports: ["127.0.0.1:19092:19092", "127.0.0.1:18081:18081"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redpanda-console:
+    image: redpandadata/console:v2.7.2
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: http://redpanda:8081
+      CONNECT_ENABLED: "true"
+      CONNECT_CLUSTERS_NAME: dataplat
+      CONNECT_CLUSTERS_URL: http://kafka-connect:8083
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  kafka-connect:
+    # Debezium on Kafka Connect for log-based CDC. Left out by the "lite" profile.
+    profiles: [full]
+    image: debezium/connect:2.7.3.Final
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:9092
+      GROUP_ID: dataplat-connect
+      CONFIG_STORAGE_TOPIC: _dataplat_connect_configs
+      OFFSET_STORAGE_TOPIC: _dataplat_connect_offsets
+      STATUS_STORAGE_TOPIC: _dataplat_connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+    volumes:
+      # Its own AppRole, for the Vault config provider wired up with CDC in Phase 1b.
+      - ${DATAPLAT_HOME:?}/approle/kafka-connect:/run/secrets/dataplat:ro
+    ports: ["127.0.0.1:8083:8083"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:8083/connectors >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  oxigraph:
+    image: oxigraph/oxigraph:0.4
+    restart: unless-stopped
+    command: serve --location /data --bind 0.0.0.0:7878
+    volumes:
+      - oxigraphdata:/data
+    ports: ["127.0.0.1:7878:7878"]
+
+  # ------------------------------------------------------------------ platform services
+  api:
+    <<: *backend
+    command: api
+    volumes:
+      - ${DATAPLAT_HOME:?}/approle/api:/run/secrets/dataplat:ro
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    <<: *backend
+    command: worker
+    volumes:
+      - ${DATAPLAT_HOME:?}/approle/worker:/run/secrets/dataplat:ro
+    depends_on:
+      <<: *backend-deps
+      api:
+        condition: service_healthy
+
+  stream-worker:
+    <<: *backend
+    command: stream-worker
+    volumes:
+      - ${DATAPLAT_HOME:?}/approle/stream-worker:/run/secrets/dataplat:ro
+    depends_on:
+      <<: *backend-deps
+      api:
+        condition: service_healthy
+
+  scheduler:
+    <<: *backend
+    command: scheduler
+    volumes:
+      - ${DATAPLAT_HOME:?}/approle/scheduler:/run/secrets/dataplat:ro
+    depends_on:
+      <<: *backend-deps
+      api:
+        condition: service_healthy
+
+  console-ui:
+    image: dataplat-console:dev
+    build:
+      context: ./console
+    restart: unless-stopped
+    ports: ["127.0.0.1:3000:80"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ one-off tools
+  # docker compose run --rm bootstrap bootstrap prepare|vault|unseal
+  bootstrap:
+    profiles: [tools]
+    image: dataplat-backend:dev
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    user: root
+    environment:
+      DATAPLAT_CONFIG: /app/config/platform.yaml
+      DATAPLAT_HOME: /dataplat-home
+    volumes:
+      - ${DATAPLAT_HOME:?}:/dataplat-home
+
+volumes:
+  pgdata:
+  miniodata:
+  vaultdata:
+  vaultlogs:
+  redpandadata:
+  oxigraphdata:
