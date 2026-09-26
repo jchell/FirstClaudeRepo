@@ -9,6 +9,7 @@ adapters:
   secret_store: vault
   object_store: minio
   query_engine: duckdb
+  table_format: delta
   metadata_store: postgres
   event_bus: redpanda
   job_queue: postgres
@@ -38,6 +39,12 @@ object_store:
   credentials: vault://kv/dataplat/platform/minio#root_user
   secret: vault://kv/dataplat/platform/minio#root_password
   buckets: [bronze, silver, gold, extracts, staging]
+
+# Medallion layout: one bucket per layer; each dataset is a Delta table under its layer.
+lake:
+  bronze: s3://bronze
+  silver: s3://silver
+  gold: s3://gold
 
 event_bus:
   bootstrap_servers: ${KAFKA_BOOTSTRAP:-redpanda:9092}

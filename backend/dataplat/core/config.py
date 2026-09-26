@@ -40,6 +40,15 @@ class ObjectStoreConfig(BaseModel):
     buckets: list[str] = []
 
 
+class LakeConfig(BaseModel):
+    bronze: str = "s3://bronze"
+    silver: str = "s3://silver"
+    gold: str = "s3://gold"
+
+    def uri(self, layer: str, name: str) -> str:
+        return f"{getattr(self, layer).rstrip('/')}/{name}"
+
+
 class EventBusConfig(BaseModel):
     bootstrap_servers: str
     schema_registry: str | None = None
@@ -74,6 +83,7 @@ class PlatformConfig(BaseModel):
     vault: VaultConfig
     postgres: PostgresConfig
     object_store: ObjectStoreConfig
+    lake: LakeConfig = LakeConfig()
     event_bus: EventBusConfig
     knowledge_graph: KnowledgeGraphConfig
     auth: AuthConfig = AuthConfig()

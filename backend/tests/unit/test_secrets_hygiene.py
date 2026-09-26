@@ -46,14 +46,22 @@ def _contains_secret(tp: typing.Any, seen: set[int]) -> bool:
     return any(_contains_secret(a, seen) for a in typing.get_args(tp))
 
 
+def iter_api_routes(routes) -> list[APIRoute]:
+    """Flattens routes, including FastAPI's wrappers around included routers."""
+    out: list[APIRoute] = []
+    for r in routes:
+        if isinstance(r, APIRoute):
+            out.append(r)
+        elif (inner := getattr(r, "original_router", None)) is not None:
+            out.extend(iter_api_routes(inner.routes))
+    return out
+
+
 def test_no_api_response_model_contains_a_secret_field() -> None:
     """Build breaker: any response model that could carry a secret value fails CI."""
-    app = create_app()
-    offenders = [
-        r.path
-        for r in app.routes
-        if isinstance(r, APIRoute) and r.response_model is not None and _contains_secret(r.response_model, set())
-    ]
+    routes = iter_api_routes(create_app().routes)
+    assert len(routes) >= 40  # guard against checking nothing
+    offenders = [r.path for r in routes if r.response_model is not None and _contains_secret(r.response_model, set())]
     assert offenders == []
 
 

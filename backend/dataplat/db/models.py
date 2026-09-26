@@ -226,3 +226,182 @@ DEFAULT_ROLES = {
     "analyst": "Query and consume published data",
     "viewer": "Read-only access to the console",
 }
+
+
+# ================================================================ Phase 1: ingestion & catalog
+
+
+class Connection(Base):
+    """A configured source. ``config`` holds only non-secret values and vault:// references."""
+
+    __tablename__ = "connections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    type: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(Text, default="")
+    config: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    # Secrets live under this service account's Vault path; jobs using the
+    # connection run as it.
+    service_account: Mapped[str | None] = mapped_column(String(64))
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_test_ok: Mapped[bool | None] = mapped_column(Boolean)
+    last_test_message: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class IngestionJob(Base):
+    __tablename__ = "ingestion_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("connections.id", ondelete="RESTRICT"), index=True)
+    spec: Mapped[dict[str, Any]] = mapped_column(Json)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    schedule_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("schedules.id", ondelete="SET NULL"))
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class IngestionJobVersion(Base):
+    """Every saved JobSpec, so runs can say exactly which definition produced them."""
+
+    __tablename__ = "ingestion_job_versions"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ingestion_jobs.id", ondelete="CASCADE"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    spec: Mapped[dict[str, Any]] = mapped_column(Json)
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestionState(Base):
+    __tablename__ = "ingestion_state"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ingestion_jobs.id", ondelete="CASCADE"), primary_key=True)
+    watermark: Mapped[Any] = mapped_column(Json, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class IngestedFile(Base):
+    __tablename__ = "ingested_files"
+    __table_args__ = (Index("uq_ingested_files_job_path", "job_id", "path", unique=True),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ingestion_jobs.id", ondelete="CASCADE"))
+    path: Mapped[str] = mapped_column(String(1024))
+    fingerprint: Mapped[str] = mapped_column(String(256))
+    checksum: Mapped[str] = mapped_column(String(64))
+    size: Mapped[int] = mapped_column(BigInteger)
+    rows: Mapped[int] = mapped_column(BigInteger, default=0)
+    batch_id: Mapped[str] = mapped_column(String(64))
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestionRun(Base):
+    __tablename__ = "ingestion_runs"
+    __table_args__ = (Index("ix_ingestion_runs_job_started", "job_id", "started_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ingestion_jobs.id", ondelete="CASCADE"))
+    job_version: Mapped[int] = mapped_column(Integer)
+    queue_job_id: Mapped[int | None] = mapped_column(BigInteger)
+    batch_id: Mapped[str] = mapped_column(String(64), index=True)
+    lineage_run_id: Mapped[str | None] = mapped_column(String(64))
+    trigger: Mapped[str] = mapped_column(String(32), default="manual")
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|succeeded|failed
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger)
+    rows_read: Mapped[int] = mapped_column(BigInteger, default=0)
+    rows_written: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes_read: Mapped[int] = mapped_column(BigInteger, default=0)
+    files: Mapped[int] = mapped_column(Integer, default=0)
+    table_version: Mapped[int | None] = mapped_column(BigInteger)
+    dataset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    details: Mapped[dict[str, Any]] = mapped_column(Json, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class Dataset(Base):
+    __tablename__ = "datasets"
+    __table_args__ = (Index("uq_datasets_layer_name", "layer", "name", unique=True),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    layer: Mapped[str] = mapped_column(String(16))  # bronze|silver|gold|vault
+    name: Mapped[str] = mapped_column(String(256))
+    uri: Mapped[str] = mapped_column(String(1024))
+    format: Mapped[str] = mapped_column(String(32), default="delta")
+    description: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str | None] = mapped_column(String(128))
+    source_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    row_count: Mapped[int | None] = mapped_column(BigInteger)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    table_version: Mapped[int | None] = mapped_column(BigInteger)
+    last_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DatasetColumn(Base):
+    __tablename__ = "dataset_columns"
+
+    dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    data_type: Mapped[str] = mapped_column(String(128))
+    nullable: Mapped[bool] = mapped_column(Boolean, default=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_audit: Mapped[bool] = mapped_column(Boolean, default=False)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SchemaChange(Base):
+    __tablename__ = "schema_changes"
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    changes: Mapped[list[dict[str, Any]]] = mapped_column(Json)
+
+
+class DatasetProfile(Base):
+    __tablename__ = "dataset_profiles"
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    row_count: Mapped[int] = mapped_column(BigInteger)
+    columns: Mapped[list[dict[str, Any]]] = mapped_column(Json)
+
+
+class PortalApp(Base):
+    """A report, dashboard or business app listed in the App Portal."""
+
+    __tablename__ = "portal_apps"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    url: Mapped[str] = mapped_column(String(2048))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(64), default="report")  # report|dashboard|app|notebook
+    owner: Mapped[str | None] = mapped_column(String(128))
+    # Datasets the app reads (for report-level lineage; Phase 4 adds column level).
+    datasets: Mapped[list[str]] = mapped_column(Json, default=list)
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

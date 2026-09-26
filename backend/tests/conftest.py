@@ -11,10 +11,10 @@ from sqlalchemy.engine import make_url
 from dataplat.adapters.jwt_identity import LocalEd25519Signer
 from dataplat.adapters.memory import (
     InMemoryEventBus,
-    InMemoryLineageSink,
     InMemoryObjectStore,
     InMemorySecretStore,
 )
+from dataplat.adapters.pg_lineage import PostgresLineageSink
 from dataplat.adapters.pg_metadata import PostgresMetadataStore
 from dataplat.adapters.pg_queue import PostgresJobQueue
 from dataplat.core.config import load_config
@@ -76,14 +76,26 @@ class FakeServiceAccountVault:
 
 
 @pytest.fixture
-def ctx(metadata_store: PostgresMetadataStore) -> Iterator[PlatformContext]:
-    config = load_config()
+def lake(tmp_path) -> dict[str, str]:
+    roots = {layer: str(tmp_path / "lake" / layer) for layer in ("bronze", "silver", "gold")}
+    return roots
+
+
+@pytest.fixture
+def ctx(metadata_store: PostgresMetadataStore, lake: dict[str, str]) -> Iterator[PlatformContext]:
+    from dataplat.adapters.delta_format import DeltaTableFormat
+    from dataplat.adapters.duckdb_engine import DuckDBQueryEngine
+    from dataplat.core.config import LakeConfig
+
+    config = load_config().model_copy(update={"lake": LakeConfig(**lake)})
     overrides: dict[str, object] = {
         "secret_store": InMemorySecretStore(),
         "object_store": InMemoryObjectStore(),
         "event_bus": InMemoryEventBus(),
-        "lineage_sink": InMemoryLineageSink(),
+        "lineage_sink": PostgresLineageSink(metadata_store),
         "token_signer": LocalEd25519Signer(),
+        "table_format": DeltaTableFormat(),
+        "query_engine": DuckDBQueryEngine(),
         "metadata_store": metadata_store,
         "_sa_vault": FakeServiceAccountVault(),
     }

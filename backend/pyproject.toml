@@ -22,10 +22,19 @@ dependencies = [
     "duckdb==1.5.5",
     "duckdb-extensions==1.5.5",
     "duckdb-extension-httpfs==1.5.5",
+    "pytz",  # DuckDB needs it to return timezone-aware timestamps
     "pyarrow>=17",
     "confluent-kafka>=2.5",
     "apscheduler>=3.10,<4",
     "httpx>=0.27",
+    "deltalake>=1.1",
+    "paramiko>=3.4",
+    "smbprotocol>=1.13",
+    "pymysql>=1.1",
+    "pymssql>=2.3",
+    "oracledb>=2.4",
+    "pymongo>=4.8",
+    "jsonpath-ng>=1.6",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +59,9 @@ memory = "dataplat.adapters.memory:InMemoryObjectStore"
 
 [project.entry-points."dataplat.adapters.query_engine"]
 duckdb = "dataplat.adapters.duckdb_engine:DuckDBQueryEngine"
+
+[project.entry-points."dataplat.adapters.table_format"]
+delta = "dataplat.adapters.delta_format:DeltaTableFormat"
 
 [project.entry-points."dataplat.adapters.metadata_store"]
 postgres = "dataplat.adapters.pg_metadata:PostgresMetadataStore"

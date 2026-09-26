@@ -38,6 +38,10 @@ class PlatformContext:
         return self.registry.get("object_store")
 
     @property
+    def tables(self):  # -> DeltaTableFormat (TableFormat port)
+        return self.registry.get("table_format")
+
+    @property
     def query_engine(self) -> QueryEngine:
         return self.registry.get("query_engine")
 
