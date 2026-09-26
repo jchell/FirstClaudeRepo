@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -29,6 +30,7 @@ from dataplat.db.models import (
 from dataplat.lineage.graph import build_graph, subgraph
 
 router = APIRouter(prefix="/api", tags=["catalog"])
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # ---------------------------------------------------------------- catalog
@@ -218,10 +220,20 @@ def ops_summary(
     done = [r for r, _ in runs if r.status in ("succeeded", "failed")]
     durations = sorted(r.duration_ms for r in done if r.duration_ms is not None)
     bucket_hours = 1 if hours <= 48 else 24
+
+    def bucket(ts: datetime) -> datetime:
+        ts = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+        return ts if bucket_hours == 1 else ts.replace(hour=0)
+
+    # Every bucket in the range, including empty ones, so the time axis is honest.
     series: dict[str, dict[str, Any]] = {}
+    t = bucket(since)
+    end = datetime.now(UTC)
+    while t <= end:
+        series[t.isoformat()] = {"t": t.isoformat(), "succeeded": 0, "failed": 0, "running": 0, "rows": 0}
+        t += timedelta(hours=bucket_hours)
     for r, _ in runs:
-        ts = r.started_at.astimezone(UTC)
-        key = ts.replace(minute=0, second=0, microsecond=0, hour=ts.hour if bucket_hours == 1 else 0).isoformat()
+        key = bucket(r.started_at).isoformat()
         b = series.setdefault(key, {"t": key, "succeeded": 0, "failed": 0, "running": 0, "rows": 0})
         b[r.status] = b.get(r.status, 0) + 1
         b["rows"] += r.rows_written or 0
@@ -251,7 +263,7 @@ def ops_summary(
         "series": list(series.values()),
         "jobs": sorted(per_job.values(), key=lambda j: j["job"]),
         "recent_failures": [
-            {"run_id": str(r.id), "job": name, "started_at": r.started_at, "error": (r.error or "")[:300]}
+            {"run_id": str(r.id), "job": name, "started_at": r.started_at, "error": _ANSI.sub("", r.error or "")[:300]}
             for r, name in reversed(runs)
             if r.status == "failed"
         ][:20],

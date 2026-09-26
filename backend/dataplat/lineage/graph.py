@@ -2,8 +2,8 @@
 
 Nodes are datasets (``dataset:<namespace>|<name>``), jobs (``job:<name>``) and
 App Portal entries (``app:<name>``). Edges run input dataset -> job -> output
-dataset -> app. The graph reflects each job's latest successful run as of a
-point in time, so it can also be viewed "as of" a past date.
+dataset -> app. Edges are the union of every successful run up to a point in
+time, so the graph can also be viewed "as of" a past date.
 """
 
 from __future__ import annotations
@@ -35,9 +35,17 @@ def build_graph(s: Session, lake: dict[str, str], as_of: datetime | None = None)
     q = select(LineageEvent).where(LineageEvent.event_type == "COMPLETE").order_by(LineageEvent.event_time)
     if as_of is not None:
         q = q.where(LineageEvent.event_time <= as_of)
+    # Table-level lineage is the union of everything a job has read and written: a run
+    # that found no new files must not erase the files earlier runs loaded.
     latest: dict[str, dict[str, Any]] = {}
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    outputs: dict[str, dict[str, dict[str, Any]]] = {}
     for ev in s.scalars(q):
-        latest[ev.job_name] = ev.event  # later events win
+        latest[ev.job_name] = ev.event  # later events win for job details
+        for ds in ev.event.get("inputs", []):
+            inputs.setdefault(ev.job_name, {})[f"{ds['namespace']}|{ds['name']}"] = ds
+        for ds in ev.event.get("outputs", []):
+            outputs.setdefault(ev.job_name, {})[f"{ds['namespace']}|{ds['name']}"] = ds
 
     nodes: dict[str, dict[str, Any]] = {}
     edges: set[tuple[str, str]] = set()
@@ -56,6 +64,8 @@ def build_graph(s: Session, lake: dict[str, str], as_of: datetime | None = None)
         return nid
 
     for job_name, ev in latest.items():
+        if not inputs.get(job_name) and not outputs.get(job_name):
+            continue  # a job that never moved data has no place in lineage
         jid = f"job:{job_name}"
         nodes[jid] = {
             "id": jid,
@@ -65,9 +75,9 @@ def build_graph(s: Session, lake: dict[str, str], as_of: datetime | None = None)
             "last_run": ev["eventTime"],
             "sql": ev["job"].get("facets", {}).get("sql", {}).get("query"),
         }
-        for ds in ev.get("inputs", []):
+        for ds in inputs.get(job_name, {}).values():
             edges.add((add_dataset(ds), jid))
-        for ds in ev.get("outputs", []):
+        for ds in outputs.get(job_name, {}).values():
             edges.add((jid, add_dataset(ds)))
 
     for app in s.scalars(select(PortalApp)):

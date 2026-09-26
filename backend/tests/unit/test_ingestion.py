@@ -244,3 +244,14 @@ def test_connection_test_reports_failure_without_raising(ctx: PlatformContext) -
         ctx, Job(id=1, kind="connection.test", payload={"connection_id": cid}, attempts=1, max_attempts=1), None
     )
     assert res["ok"] is False and res["message"]
+
+
+def test_lineage_keeps_inputs_from_earlier_runs(ctx: PlatformContext, landing: Path) -> None:
+    job_id = _job(ctx, "local_files", {"base_path": str(landing)}, _files_spec("orders_u", "incremental"))
+    runner = IngestionRunner(ctx)
+    runner.run(job_id, None)
+    runner.run(job_id, None)  # nothing new: a COMPLETE event with no inputs
+    with ctx.metadata.session() as s:
+        g = build_graph(s, ctx.config.lake.model_dump())
+    up = subgraph(g, dataset_node(ctx.config.lake.bronze, "orders_u"), "upstream")
+    assert "dataset:file://|/orders_1.csv" in {n["id"] for n in up["nodes"]}

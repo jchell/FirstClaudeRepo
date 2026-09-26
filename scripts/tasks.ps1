@@ -7,6 +7,7 @@
   ./scripts/tasks.ps1 up       # start everything (unseals Vault)
   ./scripts/tasks.ps1 up -Lite # start without Kafka Connect/Debezium (smaller machines)
   ./scripts/tasks.ps1 vault    # re-apply Vault engines/policies/AppRoles after an upgrade
+  ./scripts/tasks.ps1 dev-up   # start plus the seeded test sources (add -Mssql for SQL Server)
   ./scripts/tasks.ps1 down     # stop (data is kept)
   ./scripts/tasks.ps1 test     # unit tests + integration tests against the running stack
   ./scripts/tasks.ps1 reset    # DELETE all platform data and bootstrap material
@@ -18,9 +19,10 @@
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("init", "up", "down", "vault", "unseal", "test", "logs", "reset")]
+    [ValidateSet("init", "up", "dev-up", "seed", "down", "vault", "unseal", "test", "logs", "reset")]
     [string]$Command = "up",
-    [switch]$Lite
+    [switch]$Lite,
+    [switch]$Mssql
 )
 
 $ErrorActionPreference = "Stop"
@@ -79,9 +81,19 @@ switch ($Command) {
         Invoke-Compose run --rm api migrate
         Write-Host "Console: http://localhost:3000"
     }
+    "dev-up" {
+        & $PSCommandPath up -Lite:$Lite
+        $env:COMPOSE_FILE = "docker-compose.yml;docker-compose.dev.yml"
+        if ($Mssql) { $env:COMPOSE_PROFILES = "$env:COMPOSE_PROFILES,mssql" }
+        Invoke-Compose up -d --wait --no-build
+        if ($Mssql) { Invoke-Compose run --rm -T seed landing postgres mysql mongo sftp ftp smb s3 kafka mssql }
+        else { Invoke-Compose run --rm -T seed }
+        Write-Host "Test sources are up and seeded (see docker-compose.dev.yml for their names)."
+    }
+    "seed" { $env:COMPOSE_FILE = "docker-compose.yml;docker-compose.dev.yml"; Invoke-Compose run --rm -T seed }
     "vault" { Invoke-Bootstrap vault; Protect-InitFile }
     "unseal" { Invoke-Bootstrap unseal }
-    "down" { Invoke-Compose down }
+    "down" { $env:COMPOSE_FILE = "docker-compose.yml;docker-compose.dev.yml"; Invoke-Compose down }
     "logs" { docker compose logs -f --tail 100 }
     "test" {
         Push-Location backend
@@ -93,7 +105,8 @@ switch ($Command) {
     "reset" {
         $answer = Read-Host "This deletes ALL platform data and $env:DATAPLAT_HOME. Type 'reset' to continue"
         if ($answer -ne "reset") { Write-Host "Cancelled."; return }
-        docker compose --profile full --profile tools down -v
+        $env:COMPOSE_FILE = "docker-compose.yml;docker-compose.dev.yml"
+        docker compose --profile full --profile tools --profile mssql down -v
         Remove-Item -Recurse -Force $env:DATAPLAT_HOME -ErrorAction SilentlyContinue
         Write-Host "Reset complete. Run 'tasks.ps1 init' to start fresh."
     }

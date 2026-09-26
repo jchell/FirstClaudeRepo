@@ -117,9 +117,10 @@ class RestApiConnector(Connector):
         headers, auth_params, auth = self._auth()
         for attempt in range(4):
             try:
-                r = self.http.request(
-                    method, url, params={**params, **auth_params}, json=body, headers=headers, auth=auth
-                )
+                # httpx replaces a URL's own query string when given params (even empty ones),
+                # which would break next-page URLs that carry their own query.
+                merged = {**params, **auth_params} or None
+                r = self.http.request(method, url, params=merged, json=body, headers=headers, auth=auth)
             except httpx.HTTPError as e:
                 if attempt == 3:
                     raise ConnectorError(f"request failed: {type(e).__name__}") from e

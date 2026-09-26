@@ -178,6 +178,8 @@ services:
     command: worker
     volumes:
       - ${DATAPLAT_HOME:?}/approle/worker:/run/secrets/dataplat:ro
+      # Folder the "Local folder" connection type reads (read-only).
+      - ${DATAPLAT_LANDING:-./samples/landing}:/data/landing:ro
     depends_on:
       <<: *backend-deps
       api:

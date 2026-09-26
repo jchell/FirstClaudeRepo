@@ -14,6 +14,7 @@ Steps, all under one batch id:
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from datetime import UTC, datetime
@@ -47,6 +48,7 @@ from dataplat.quality.profiler import profile
 log = logging.getLogger(__name__)
 
 NAMESPACE = "dataplat"
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 RUNS_TOPIC = "dataplat.runs"
 
 
@@ -257,10 +259,9 @@ class IngestionRunner:
             mode = "overwrite" if spec.load_mode == "full" else "append"
             try:
                 version = tf.write(data, uri, mode=mode)
-            except Exception as e:  # delta-rs raises various schema errors
-                raise IngestionError(
-                    f"writing {spec.target.layer}.{spec.target.dataset} failed (incompatible schema change?): {e}"
-                ) from e
+            except Exception as e:  # delta-rs raises many error types (schema, storage...)
+                hint = " (incompatible schema change?)" if "schema" in str(e).lower() else ""
+                raise IngestionError(f"writing {spec.target.layer}.{spec.target.dataset} failed{hint}: {e}") from e
             rows_written = data.num_rows
         elif not tf.exists(uri):
             return {"rows_written": 0, "schema_changes": []}  # nothing read yet, nothing to register
@@ -357,9 +358,10 @@ class IngestionRunner:
         job_name: str,
         out_namespace: str,
     ) -> None:
-        message = redact(f"{type(error).__name__}: {error}")
+        message = f"{type(error).__name__}: {error}"
         if isinstance(error, ConnectorError | IngestionError):
-            message = redact(str(error))
+            message = str(error)
+        message = redact(_ANSI.sub("", message))
         with self.ctx.metadata.session() as s:
             run = s.get(IngestionRun, run_id)
             run.status = "failed"

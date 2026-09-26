@@ -1,7 +1,7 @@
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 
-import { StrictMode } from 'react';
+import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
@@ -15,6 +15,14 @@ import { AdminPage } from './pages/admin/AdminPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
 import { PlaceholderPage } from './pages/PlaceholderPage';
+import { CatalogPage, DatasetPage } from './pages/catalog/CatalogPage';
+import { ConnectionsPage } from './pages/connections/ConnectionsPage';
+import { JobDetailPage, JobsPage } from './pages/ingestion/JobsPage';
+import { JobWizard } from './pages/ingestion/JobWizard';
+import { PortalPage } from './pages/portal/PortalPage';
+
+// The lineage graph libraries are large; load them only when lineage is opened.
+const LineagePage = lazy(() => import('./pages/lineage/LineagePage').then((m) => ({ default: m.LineagePage })));
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 5_000 } } });
 
@@ -43,7 +51,16 @@ createRoot(document.getElementById('root')!).render(
                     </RequireAuth>
                   }
                 />
-                {PAGES.filter((p) => p.path !== '/' && p.path !== '/admin').map((p) => (
+                <Route path="connections" element={<ConnectionsPage />} />
+                <Route path="ingestion" element={<JobsPage />} />
+                <Route path="ingestion/new" element={<RequireAuth roles={['engineer']}><JobWizard /></RequireAuth>} />
+                <Route path="ingestion/:jobId" element={<JobDetailPage />} />
+                <Route path="ingestion/:jobId/edit" element={<RequireAuth roles={['engineer']}><JobWizard /></RequireAuth>} />
+                <Route path="catalog" element={<CatalogPage />} />
+                <Route path="catalog/:datasetId" element={<DatasetPage />} />
+                <Route path="lineage" element={<Suspense fallback={null}><LineagePage /></Suspense>} />
+                <Route path="portal" element={<PortalPage />} />
+                {PAGES.filter((p) => !p.ready).map((p) => (
                   <Route key={p.path} path={p.path.slice(1)} element={<PlaceholderPage page={p} />} />
                 ))}
                 <Route path="*" element={<HomePage />} />

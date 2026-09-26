@@ -16,6 +16,20 @@ def _migrate() -> None:
     cfg = Config(os.path.join(here, "alembic.ini"))
     cfg.set_main_option("script_location", os.path.join(here, "alembic"))
     command.upgrade(cfg, "head")
+    _ensure_buckets()
+
+
+def _ensure_buckets() -> None:
+    """Creates the object-store buckets the platform writes to (lake layers, extracts...)."""
+    from dataplat.core.context import PlatformContext
+
+    ctx = PlatformContext()
+    try:
+        for bucket in ctx.config.object_store.buckets:
+            ctx.objects.ensure_bucket(bucket)
+        logging.getLogger("dataplat").info("object store buckets ready: %s", ", ".join(ctx.config.object_store.buckets))
+    finally:
+        ctx.close()
 
 
 def _create_admin(username: str) -> None:
