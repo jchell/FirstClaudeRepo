@@ -58,6 +58,10 @@ class PlatformContext:
         return self.registry.get("change_capture")
 
     @property
+    def serving(self):  # -> PostgresServingStore (ServingStore port)
+        return self.registry.get("serving_store")
+
+    @property
     def signer(self) -> TokenSigner:
         return self.registry.get("token_signer")
 

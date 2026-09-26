@@ -35,6 +35,7 @@ dependencies = [
     "oracledb>=2.4",
     "pymongo>=4.8",
     "jsonpath-ng>=1.6",
+    "sqlglot>=25",  # SQL model parsing and column-level lineage
 ]
 
 [project.optional-dependencies]
@@ -82,6 +83,9 @@ debezium = "dataplat.adapters.debezium_capture:DebeziumChangeCapture"
 
 [project.entry-points."dataplat.adapters.knowledge_graph"]
 oxigraph = "dataplat.adapters.oxigraph_store:OxigraphStore"
+
+[project.entry-points."dataplat.adapters.serving_store"]
+postgres = "dataplat.adapters.pg_serving:PostgresServingStore"
 
 [project.entry-points."dataplat.adapters.lineage_sink"]
 postgres = "dataplat.adapters.pg_lineage:PostgresLineageSink"

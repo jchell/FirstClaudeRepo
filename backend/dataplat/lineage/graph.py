@@ -28,6 +28,8 @@ def _layer_of(namespace: str, lake: dict[str, str]) -> str:
     for layer, root in lake.items():
         if namespace.rstrip("/") == root.rstrip("/"):
             return layer
+    if namespace.startswith("serving://"):
+        return "serving"
     return "source"
 
 

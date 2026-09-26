@@ -28,7 +28,17 @@ NAMESPACE = "dataplat"
 
 # Kinds that emit their own, richer lineage (ingestion) or move no data (source
 # checks); a generic START/COMPLETE for them would only clutter the graph.
-NO_GENERIC_LINEAGE = {"ingestion.run", "connection.test", "connection.discover", "connection.preview"}
+NO_GENERIC_LINEAGE = {
+    "ingestion.run",
+    "connection.test",
+    "connection.discover",
+    "connection.preview",
+    "vault.load",
+    "vault.build",
+    "model.run",
+    "model.preview",
+    "pipeline.run",
+}
 
 
 class _ForbiddenAsPermissionError(VaultSecretStore):

@@ -119,13 +119,17 @@ def _job_out(row: JobRow) -> JobOut:
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs(limit: int = 50, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
+def list_jobs(
+    limit: int = 50, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+):
     q = select(JobRow).order_by(JobRow.id.desc()).limit(min(max(limit, 1), 500))
     return [_job_out(r) for r in s.scalars(q)]
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: int, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
+def get_job(
+    job_id: int, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+):
     row = s.get(JobRow, job_id)
     if row is None:
         raise HTTPException(404, "job not found")

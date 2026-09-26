@@ -9,8 +9,9 @@ phases listed there.
 | 0 — Foundations | ✅ done |
 | 1 — Ingestion MVP | ✅ done |
 | 1b — Near-real-time | ✅ done |
-| 2 — Vault & Transform | next |
-| 3, 3b, 4, 5 | planned |
+| 2 — Vault & Transform | ✅ done |
+| 3 — Quality & Governance | next |
+| 3b, 4, 5 | planned |
 
 ## Quick start (Windows)
 
@@ -105,6 +106,54 @@ How it works:
 - **Clean-up:** streaming tables are compacted hourly. Deleting a Postgres CDC job drops its
   replication slot and publication in the source.
 
+## Data Vault, models and lineage (Phase 2)
+
+- **Add to Raw Vault.** In the wizard's last step, choose the business key column(s) (a hub),
+  the descriptive columns (a satellite), and optionally relationships to other hubs (links)
+  and a status satellite that records deletes. Every run, and every streaming micro-batch,
+  then loads the vault. The **Data Vault** page designs hubs, links, satellites (including
+  multi-active ones), PIT and bridge tables by hand, maps any bronze/silver dataset onto
+  them, and shows the model as a diagram.
+- **Loads are insert-only.** Hash keys are SHA-1 over trimmed, upper-cased business keys;
+  hashdiffs detect changes. A satellite row is added only when its hashdiff differs from the
+  previous row for that key: the one before it in the batch, or else the latest earlier row
+  in the vault. Each load reads only rows newer than its high-water mark, holds a per-table
+  lock, and can be re-run safely. Rows keep `load_date` (the source commit time for CDC),
+  `record_source` and the source `_batch_id`.
+- **Models** (Pipelines page) build silver and gold tables:
+  - **SQL models** use `{{ source('bronze','orders') }}`, `{{ vault('sat_x') }}`,
+    `{{ ref('model') }}`, and `{% if is_incremental() %}` with `{{ this }}`. A model is
+    materialized as a table (rebuilt) or incrementally (merged on a unique key, or appended).
+  - **SCD2 dimensions** are built from a satellite's history (business keys come from its
+    hub), with `valid_from`/`valid_to`/`is_current` and stable surrogate keys. A status
+    satellite closes deleted rows.
+  - **Facts** look up each dimension's surrogate key as of the fact's event time, or `'-1'`
+    when there is no match.
+  - A **date dimension** is also available.
+  - **Promote to silver** in the wizard keeps a silver copy without the bronze audit columns.
+- **Pipelines** build their models in dependency order, on a schedule and/or whenever a
+  dataset they watch gets new data. A failed model skips the models downstream of it. So
+  a CDC change flows source → bronze → vault → gold on its own; the integration test sees
+  it in the gold SCD2 dimension in a few seconds.
+- **Serving DB.** Models marked *serve* are copied into the Postgres `serving` database
+  (schemas `silver`/`gold`) after every build. Full rebuilds swap in a new copy atomically;
+  incremental models upsert.
+- **SQL runs in a sandbox.** Model and vault SQL runs in its own DuckDB. Inputs are handed
+  over as Arrow datasets, then file, network and extension access is switched off and the
+  configuration locked, so a model can't read files, secrets or buckets it wasn't given.
+  Only a single `SELECT` is accepted.
+- **Lineage Explorer:**
+  - Column-level lineage comes from ingestion (source column → bronze), vault mappings, and
+    SQL parsed with sqlglot (or the SCD2/fact builders).
+  - **Trace** a column upstream ("how does this get its value?") or downstream; each step
+    shows the job and its SQL.
+  - **Impact analysis** lists the datasets, jobs and reports affected by a table or column,
+    with CSV export.
+  - **Time travel**: view the graph as of any past moment.
+  - **Batch trace**: follow a `_batch_id` from the source files to every table holding its
+    rows.
+  - Live overlays mark failed jobs, late datasets and stream lag.
+
 ### Test sources
 
 `make dev-up` (Windows: `tasks.ps1 dev-up`) starts sample sources next to the platform and
@@ -137,9 +186,12 @@ backend/dataplat/
   adapters/            local adapters: Vault, Postgres, MinIO, DuckDB, Delta Lake, Redpanda, Oxigraph, lineage
   connectors/          connector SDK + file, database, MongoDB, REST and Kafka connectors
   ingestion/           job spec, runner (source -> bronze Delta), worker handlers
+  vault/               Data Vault 2.0 definitions, hashing, SQL generation, insert-only loader, PIT/bridge
+  transform/           SQL templating, sandbox, SCD2/fact/date builders, model + pipeline runner, triggers
   catalog/, quality/   catalog registration + schema drift, column profiler
-  lineage/             OpenLineage events and the lineage graph
-  api/                 FastAPI app (auth, admin, connections, ingestion, catalog, lineage, ops, portal)
+  lineage/             OpenLineage events, table + column lineage graph, trace, impact, batch trace
+  api/                 FastAPI app (auth, admin, connections, ingestion, streams, vault, transform,
+                       catalog, lineage, ops, portal)
   security/            passwords, login/refresh/lockout, service accounts
   orchestration/       job handlers, worker, scheduler, stream worker
   bootstrap/           Vault init/unseal/configure, per-service policies
@@ -220,5 +272,18 @@ The integration suite checks the plan's Phase 0 guarantees against the live stac
   CDC (via Kafka Connect), webhooks and credential-free topics stream continuously.
 - **Webhook keys** are stored only as SHA-256 hashes, not in Vault, since there's nothing to
   read back. A lost key is replaced by issuing a new one.
+- **No Python models.** The plan mentions SQL/Python models. Only SQL models (and the
+  declarative builders) are offered, because running user Python on the worker would let a
+  model read the worker's Vault credentials. Python models need a separate, credential-free
+  sandbox and are deferred.
+- **SCD2 dimensions and PIT/bridge tables are rebuilt in full** each run. They're derived
+  from the complete satellite history, so this is always correct, and fast at laptop scale.
+  Satellites, hubs, links and incremental models do load only new data.
+- **Multi-active satellites** detect changes per (key, multi-active key) row, not per whole
+  set of rows for a key.
+- **Surrogate keys** are MD5 hashes of the business key and `valid_from` (text), not
+  integers, so they stay stable when a dimension is rebuilt.
+- **Lineage access control** (hiding nodes a user may not see) arrives with the Phase 3
+  permission model. Today every signed-in user sees the whole graph.
 - **Oracle** is implemented but not covered by the test suite, since there's no free Oracle
   image in the dev profile. Every other connector is tested against a real server.

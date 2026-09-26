@@ -154,7 +154,9 @@ def list_connections(s: Session = Depends(get_session, scope="function"), _: Pri
 
 @router.get("/connections/{connection_id}", response_model=ConnectionOut)
 def get_connection(
-    connection_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
+    connection_id: uuid.UUID,
+    s: Session = Depends(get_session, scope="function"),
+    _: Principal = Depends(current_principal),
 ):
     c = s.get(Connection, connection_id)
     if c is None:
@@ -335,7 +337,9 @@ def preview(
     return _enqueue(ctx, s, connection_id, "connection.preview", {"request": body.model_dump(exclude_none=True)})
 
 
-SOURCE_TASKS = {"connection.test", "connection.discover", "connection.preview"}
+# Short tasks the console polls for; previews carry data and are handed out once.
+SOURCE_TASKS = {"connection.test", "connection.discover", "connection.preview", "model.preview"}
+DATA_TASKS = {"connection.preview", "model.preview"}
 
 
 @router.get("/tasks/{task_id}", response_model=TaskOut)
@@ -346,7 +350,7 @@ def get_task(task_id: int, s: Session = Depends(get_session, scope="function"), 
     out = TaskOut(
         task_id=row.id, kind=row.kind, status=row.status, result=row.result, error=_first_line(row.last_error)
     )
-    if row.kind == "connection.preview" and row.status == "succeeded":
+    if row.kind in DATA_TASKS and row.status == "succeeded":
         # Source data doesn't stay in the metadata database: hand it out once.
         row.result = {"consumed": True}
     return out

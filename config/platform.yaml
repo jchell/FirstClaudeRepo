@@ -17,6 +17,7 @@ adapters:
   knowledge_graph: oxigraph
   lineage_sink: postgres
   change_capture: debezium
+  serving_store: postgres
 
 vault:
   addr: ${VAULT_ADDR:-http://vault:8200}
@@ -39,13 +40,15 @@ object_store:
   endpoint: ${OBJECT_STORE_ENDPOINT:-http://minio:9000}
   credentials: vault://kv/dataplat/platform/minio#root_user
   secret: vault://kv/dataplat/platform/minio#root_password
-  buckets: [bronze, silver, gold, extracts, staging]
+  buckets: [bronze, silver, gold, vault, extracts, staging]
 
 # Medallion layout: one bucket per layer; each dataset is a Delta table under its layer.
+# The Data Vault (hubs, links, satellites, PIT and bridge tables) has its own root.
 lake:
   bronze: s3://bronze
   silver: s3://silver
   gold: s3://gold
+  vault: s3://vault
 
 event_bus:
   bootstrap_servers: ${KAFKA_BOOTSTRAP:-redpanda:9092}
@@ -54,6 +57,11 @@ event_bus:
 change_capture:
   # Kafka Connect REST API (Debezium).
   url: ${KAFKA_CONNECT_URL:-http://kafka-connect:8083}
+
+# Gold/silver models marked "serve" are replicated into this Postgres database, with
+# the same short-lived Vault credentials the metadata store uses.
+serving:
+  database: serving
 
 knowledge_graph:
   url: ${OXIGRAPH_URL:-http://oxigraph:7878}

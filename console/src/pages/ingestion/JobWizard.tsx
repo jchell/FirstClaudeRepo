@@ -30,6 +30,7 @@ import { api, json } from '../../api/client';
 import { runTask } from '../../api/tasks';
 import type { Connection, IngestionJob, JobSpec, Preview, SourceObject, Task } from '../../api/types';
 import { useConnectionTypes } from '../connections/ConnectionsPage';
+import { RawVaultFields, rawVaultValid } from '../vault/RawVaultFields';
 
 const EMPTY: JobSpec = {
   source: { format_options: {}, options: {} },
@@ -489,27 +490,27 @@ export function JobWizard() {
                 onChange={(v) => setSpec({ ...spec, schedule: { type: 'interval', interval_seconds: Number(v) } })}
               />
             )}
-            <Checkbox
-              disabled
-              label={
-                <Group gap={6}>
-                  Add to Raw Vault (hubs, links, satellites) <Badge size="xs" variant="light">Phase 2</Badge>
-                </Group>
-              }
+            <RawVaultFields
+              value={spec.raw_vault}
+              onChange={(raw_vault) => setSpec({ ...spec, raw_vault })}
+              columns={columns}
+              dataset={spec.target.dataset}
+              cdc={spec.load_mode === 'cdc'}
             />
             <Checkbox
-              disabled
-              label={
-                <Group gap={6}>
-                  Promote to silver automatically <Badge size="xs" variant="light">Phase 2</Badge>
-                </Group>
-              }
+              label="Promote to silver automatically"
+              description={`Keeps silver.${spec.target.dataset || '<dataset>'} (without bronze audit columns) up to date after every load`}
+              checked={!!spec.promote_to_silver}
+              onChange={(e) => setSpec({ ...spec, promote_to_silver: e.currentTarget.checked })}
             />
             <Group>
               <Button variant="default" onClick={() => setStep(2)}>
                 Back
               </Button>
-              <Button disabled={!/^[a-z][a-z0-9_]{1,62}$/.test(spec.target.dataset)} onClick={() => setStep(4)}>
+              <Button
+                disabled={!/^[a-z][a-z0-9_]{1,62}$/.test(spec.target.dataset) || !rawVaultValid(spec.raw_vault)}
+                onClick={() => setStep(4)}
+              >
                 Next
               </Button>
             </Group>
@@ -555,6 +556,18 @@ export function JobWizard() {
                         ? `when files arrive (checked every ${spec.schedule.poll_seconds ?? 30} s)`
                         : `every ${spec.schedule.interval_seconds ?? 0} s`}
               </Text>
+              {spec.raw_vault && (
+                <Text size="sm">
+                  Raw vault: <Code>{spec.raw_vault.hub.name}</Code> on {Object.values(spec.raw_vault.hub.keys).join(', ')}
+                  {spec.raw_vault.attributes.length ? ` + ${spec.raw_vault.attributes.length} satellite attributes` : ''}
+                  {spec.raw_vault.links.length ? ` + ${spec.raw_vault.links.length} link(s)` : ''}
+                </Text>
+              )}
+              {spec.promote_to_silver && (
+                <Text size="sm">
+                  Promoted to <Code>silver.{spec.target.dataset}</Code> after each load
+                </Text>
+              )}
               <Text size="xs" c="dimmed" mt={4}>
                 Each run adds _load_ts, _source, _batch_id and _file columns, registers the table in the catalog, profiles
                 it and records lineage.

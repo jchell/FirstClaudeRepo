@@ -161,8 +161,16 @@ export interface JobSpec {
     poll_seconds?: number | null;
   };
   stream?: { write_mode: 'changelog' | 'mirror'; snapshot?: 'initial' | 'never'; max_records?: number; max_seconds?: number };
-  raw_vault?: unknown;
+  raw_vault?: RawVaultSpec | null;
   promote_to_silver?: boolean;
+}
+
+export interface RawVaultSpec {
+  hub: { name: string; keys: Record<string, string> };
+  attributes: string[];
+  satellite?: string | null;
+  track_deletes?: boolean;
+  links: { name: string; hub: { name: string; keys: Record<string, string> } }[];
 }
 
 export interface IngestionRun {
@@ -270,6 +278,12 @@ export interface LineageNode {
   sql?: string | null;
   url?: string;
   file?: { size: number; sha256: string; rows: number };
+  /** Live overlay: last run status (jobs), or late/alert (datasets). */
+  status?: string;
+  last_error?: string | null;
+  alert?: string;
+  lag?: number | null;
+  latency_p95_ms?: number | null;
 }
 
 export interface LineageGraph {
@@ -351,4 +365,185 @@ export interface AlertInfo {
   details: Record<string, unknown>;
   opened_at: string;
   resolved_at: string | null;
+}
+
+// ---------------------------------------------------------------- Phase 2: lineage
+
+export interface ColumnNode {
+  id: string;
+  type: 'column';
+  label: string;
+  dataset: string;
+  namespace: string;
+  dataset_node: string;
+  layer: string;
+}
+
+export interface ColumnEdge {
+  source: string;
+  target: string;
+  job: string;
+}
+
+export interface DatasetColumns {
+  columns: ColumnNode[];
+  upstream: ColumnEdge[];
+  downstream: ColumnEdge[];
+}
+
+export interface ColumnTrace {
+  nodes: ColumnNode[];
+  edges: ColumnEdge[];
+  steps: { from: string; to: string; job: string; sql: string | null }[];
+}
+
+export interface ImpactResult {
+  node: string;
+  affected: { id: string; type: string; name: string; layer: string | null; status?: string | null }[];
+  columns: [string, string][];
+}
+
+export interface BatchTrace {
+  batch_id: string;
+  origin: {
+    job: string | null;
+    run_id: string;
+    status: string;
+    started_at: string;
+    files: { path: string; rows: number; size: number; sha256: string }[];
+    rows_written: number;
+    target: string | null;
+  } | null;
+  datasets: { dataset: string; layer: string; rows: number; dataset_id: string }[];
+  apps: string[];
+}
+
+// ---------------------------------------------------------------- Phase 2: vault & transform
+
+/** Free-form JSON documents (vault definitions, model configs, run details). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type Json = Record<string, any>;
+
+export type VaultKind = 'hub' | 'link' | 'sat' | 'pit' | 'bridge';
+
+export interface VaultObject {
+  id: string;
+  kind: VaultKind;
+  name: string;
+  definition: Json;
+  description: string;
+  hash_key: string | null;
+  required_keys: string[];
+  columns: string[];
+  rows: number | null;
+  last_loaded_at: string | null;
+  dataset_id: string | null;
+  mappings: number;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface VaultMapping {
+  id: string;
+  source: string;
+  target: string;
+  target_kind: VaultKind;
+  keys: Record<string, string>;
+  attributes: Record<string, string>;
+  record_source: string | null;
+  ingestion_job_id: string | null;
+  enabled: boolean;
+  high_water: string | null;
+  last_loaded_at: string | null;
+  last_rows: number | null;
+}
+
+export interface VaultRun {
+  id: string;
+  kind: string;
+  source: string;
+  status: string;
+  started_at: string;
+  duration_ms: number | null;
+  rows: number;
+  error: string | null;
+}
+
+export interface VaultObjectDetail extends Omit<VaultObject, 'mappings'> {
+  mappings: VaultMapping[];
+  used_by: string[];
+  runs: VaultRun[];
+}
+
+export interface VaultDiagram {
+  nodes: { id: string; kind: VaultKind | 'source'; label: string }[];
+  edges: { source: string; target: string; kind: string }[];
+}
+
+export type ModelKind = 'sql' | 'scd2_dimension' | 'fact' | 'date_dimension';
+
+export interface TransformRun {
+  id: string;
+  kind: string;
+  target: string;
+  trigger: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  rows_written: number;
+  table_version: number | null;
+  pipeline_id: string | null;
+  parent_run_id: string | null;
+  details: Json;
+  error: string | null;
+}
+
+export interface TransformModel {
+  id: string;
+  name: string;
+  layer: 'silver' | 'gold';
+  kind: ModelKind;
+  sql: string;
+  config: Json;
+  description: string;
+  version: number;
+  enabled: boolean;
+  owner: string | null;
+  depends_on: string[];
+  /** Every dataset the model reads ("<layer>.<name>"). */
+  inputs: string[];
+  used_by: string[];
+  dataset_id: string | null;
+  rows: number | null;
+  last_run: TransformRun | null;
+  updated_at: string;
+}
+
+export interface PipelineInfo {
+  id: string;
+  name: string;
+  description: string;
+  models: string[];
+  order: string[];
+  edges: { source: string; target: string }[];
+  layers: Record<string, string>;
+  kinds: Record<string, ModelKind>;
+  schedule: { type: 'none' | 'cron' | 'interval'; cron?: string; interval_seconds?: number };
+  trigger_datasets: string[];
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run: TransformRun | null;
+  created_by: string | null;
+  updated_at: string;
+}
+
+export interface ModelPreview {
+  ok: boolean;
+  error?: string;
+  sql?: string;
+  columns?: { name: string; type: string }[];
+  rows?: Record<string, unknown>[];
+  lineage?: Record<string, string[]>;
+  dependencies?: string[];
 }

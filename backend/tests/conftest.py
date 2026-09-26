@@ -50,6 +50,9 @@ def pg_url() -> Iterator[str]:
 def metadata_store(pg_url: str) -> Iterator[PostgresMetadataStore]:
     engine = create_engine(pg_url)
     Base.metadata.drop_all(engine)
+    with engine.begin() as c:  # serving replicas from earlier tests
+        c.execute(text("DROP SCHEMA IF EXISTS gold CASCADE"))
+        c.execute(text("DROP SCHEMA IF EXISTS silver CASCADE"))
     Base.metadata.create_all(engine)
     store = PostgresMetadataStore(engine)
     with store.session() as s:
@@ -77,7 +80,7 @@ class FakeServiceAccountVault:
 
 @pytest.fixture
 def lake(tmp_path) -> dict[str, str]:
-    roots = {layer: str(tmp_path / "lake" / layer) for layer in ("bronze", "silver", "gold")}
+    roots = {layer: str(tmp_path / "lake" / layer) for layer in ("bronze", "silver", "gold", "vault")}
     return roots
 
 
@@ -85,6 +88,7 @@ def lake(tmp_path) -> dict[str, str]:
 def ctx(metadata_store: PostgresMetadataStore, lake: dict[str, str]) -> Iterator[PlatformContext]:
     from dataplat.adapters.delta_format import DeltaTableFormat
     from dataplat.adapters.duckdb_engine import DuckDBQueryEngine
+    from dataplat.adapters.pg_serving import PostgresServingStore
     from dataplat.core.config import LakeConfig
 
     config = load_config().model_copy(update={"lake": LakeConfig(**lake)})
@@ -97,6 +101,8 @@ def ctx(metadata_store: PostgresMetadataStore, lake: dict[str, str]) -> Iterator
         "table_format": DeltaTableFormat(),
         "query_engine": DuckDBQueryEngine(),
         "metadata_store": metadata_store,
+        # The serving "database" is the test database itself (tables land in gold/silver schemas).
+        "serving_store": PostgresServingStore(metadata_store.engine),
         "_sa_vault": FakeServiceAccountVault(),
     }
     c = PlatformContext(config, overrides)

@@ -21,6 +21,11 @@ from dataplat.db.models import JobRow
 LEASE = timedelta(minutes=30)
 
 
+# Dedupe keys with this prefix only coalesce *queued* jobs (see claim()); plain keys also
+# block while a job is running.
+COALESCE_PREFIX = "coalesce:"
+
+
 class DuplicateJob(Exception):
     pass
 
@@ -92,6 +97,10 @@ class PostgresJobQueue:
             if row is None:
                 return None
             row.status = "running"
+            if row.dedupe_key and row.dedupe_key.startswith(COALESCE_PREFIX):
+                # "At most one waiting" keys: once this run starts, the next trigger may queue
+                # a follow-up, so changes that arrive mid-run are never dropped.
+                row.dedupe_key = None
             row.attempts += 1
             row.locked_by = worker_id
             row.locked_at = now
