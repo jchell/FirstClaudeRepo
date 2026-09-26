@@ -77,7 +77,7 @@ test('the wizard sets up CDC replication and the stream shows up live', async ({
   await page.getByRole('button', { name: 'Save and start' }).click();
 
   await expect(page.getByRole('heading', { name: 'Streams & Replication' })).toBeVisible();
-  await expect(page.getByText('live')).toBeVisible();
+  await expect(page.getByText('live', { exact: true })).toBeVisible();
   const row = page.getByTestId(`stream-${JOB}`);
   await expect(row.getByText('running')).toBeVisible({ timeout: 60_000 });
   await expect(row.getByRole('cell').nth(5)).toHaveText('5', { timeout: 60_000 }); // snapshot

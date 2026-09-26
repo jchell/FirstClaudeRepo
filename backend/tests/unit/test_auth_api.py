@@ -71,6 +71,8 @@ def test_rate_limit(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(auth_router, "_login_limiter", SlidingWindowLimiter(2, 60))
     _login(client), _login(client)
     assert _login(client).status_code == 429
+    # Another account from the same address has its own budget.
+    assert _login(client, "nobody", "whatever password").status_code == 401
 
 
 def test_refresh_rotates_and_detects_reuse(client: TestClient) -> None:

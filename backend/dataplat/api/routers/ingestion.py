@@ -204,12 +204,12 @@ def _sync_schedule(s: Session, job: IngestionJob, spec: JobSpec, conn: Connectio
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs(s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def list_jobs(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     return [_job_out(s, j) for j in s.scalars(select(IngestionJob).order_by(IngestionJob.name))]
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def get_job(job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     j = s.get(IngestionJob, job_id)
     if j is None:
         raise HTTPException(404, "job not found")
@@ -220,7 +220,7 @@ def get_job(job_id: uuid.UUID, s: Session = Depends(get_session), _: Principal =
 def create_job(
     body: JobIn,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -253,7 +253,7 @@ def update_job(
     job_id: uuid.UUID,
     body: JobUpdate,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -289,7 +289,7 @@ def update_job(
 def delete_job(
     job_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -319,7 +319,7 @@ def delete_job(
 
 
 @router.get("/jobs/{job_id}/versions")
-def job_versions(job_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def job_versions(job_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     rows = s.scalars(
         select(IngestionJobVersion)
         .where(IngestionJobVersion.job_id == job_id)
@@ -334,7 +334,7 @@ def job_versions(job_id: uuid.UUID, s: Session = Depends(get_session), _: Princi
 def run_now(
     job_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ) -> dict[str, Any]:
@@ -359,7 +359,7 @@ def run_now(
 
 @router.post("/jobs/{job_id}/reset-state", status_code=204)
 def reset_state(
-    job_id: uuid.UUID, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(engineer)
+    job_id: uuid.UUID, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(engineer)
 ):
     """Forgets the watermark and ingested-file list, so the next run starts from scratch."""
     job = s.get(IngestionJob, job_id)
@@ -375,7 +375,7 @@ def list_runs(
     job_id: uuid.UUID | None = None,
     status: str | None = None,
     limit: int = 100,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     _: Principal = Depends(current_principal),
 ):
     q = (
@@ -392,7 +392,7 @@ def list_runs(
 
 
 @router.get("/runs/{run_id}", response_model=RunOut)
-def get_run(run_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def get_run(run_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     r = s.get(IngestionRun, run_id)
     if r is None:
         raise HTTPException(404, "run not found")

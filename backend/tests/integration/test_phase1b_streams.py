@@ -56,9 +56,14 @@ def sa(api) -> str:
 def _conn(api, sa: str, type_: str, config: dict, secrets: dict | None = None) -> str:
     r = api.post(
         "/api/connections",
-        json={"name": f"it-{type_}-{uuid.uuid4().hex[:5]}", "type": type_, "service_account": sa if secrets else None,
-              "config": config, "secrets": secrets or {}},
-    )  # fmt: skip
+        json={
+            "name": f"it-{type_}-{uuid.uuid4().hex[:5]}",
+            "type": type_,
+            "service_account": sa if secrets else None,
+            "config": config,
+            "secrets": secrets or {},
+        },
+    )
     assert r.status_code == 201, r.text
     return r.json()["id"]
 
@@ -66,10 +71,17 @@ def _conn(api, sa: str, type_: str, config: dict, secrets: dict | None = None) -
 def _stream(api, cid: str, obj: str | None, dataset: str, mode: str = "cdc", write_mode: str = "changelog") -> dict:
     r = api.post(
         "/api/ingestion/jobs",
-        json={"name": f"it_{dataset}", "connection_id": cid, "spec": {
-            "source": {"object": obj}, "load_mode": mode, "target": {"layer": "bronze", "dataset": dataset},
-            "stream": {"write_mode": write_mode, "max_seconds": 1, "max_records": 500}}},
-    )  # fmt: skip
+        json={
+            "name": f"it_{dataset}",
+            "connection_id": cid,
+            "spec": {
+                "source": {"object": obj},
+                "load_mode": mode,
+                "target": {"layer": "bronze", "dataset": dataset},
+                "stream": {"write_mode": write_mode, "max_seconds": 1, "max_records": 500},
+            },
+        },
+    )
     assert r.status_code == 201, r.text
     CREATED.append(r.json()["id"])
     return r.json()
@@ -115,8 +127,11 @@ def test_postgres_cdc_mirror_within_10s_and_metrics(api, sa) -> None:
     victim = int(_psql("select min(id) from crm.customers where id > 3").strip())
     try:
         t0 = time.monotonic()
-        _psql(f"insert into crm.customers values ({new_id},'Nrt','Test','nrt@x.io','+1','Oslo','NO',now());"
-              f"update crm.customers set city='Bodo', updated_at=now() where id=3; delete from crm.customers where id={victim};")  # fmt: skip
+        _psql(
+            f"insert into crm.customers values ({new_id},'Nrt','Test','nrt@x.io','+1','Oslo','NO',now());"
+            "update crm.customers set city='Bodo', updated_at=now() where id=3;"
+            f"delete from crm.customers where id={victim};"
+        )
 
         def applied():
             rows = {r["id"]: r for r in _rows(api, ds)}
@@ -185,23 +200,50 @@ def test_mysql_cdc_changelog(api, sa) -> None:
     job = _stream(api, cid, "products", ds)
     wait(lambda: len(_rows(api, ds)) >= 80, timeout=120, what="mysql snapshot")
     sku = f"SKU-N{uuid.uuid4().hex[:4]}"
-    compose("exec", "-T", "src-mysql", "mysql", "-udev", "-pdevsource", "shop", "-e",
-            f"insert into products values ('{sku}', 'New', 1.50, 3, now())")  # fmt: skip
+    compose(
+        "exec",
+        "-T",
+        "src-mysql",
+        "mysql",
+        "-udev",
+        "-pdevsource",
+        "shop",
+        "-e",
+        f"insert into products values ('{sku}', 'New', 1.50, 3, now())",
+    )
     row = wait(lambda: next((r for r in _rows(api, ds) if r["sku"] == sku), None), timeout=15, what="mysql insert")
     assert row["_op"] == "c" and row["_source_ts"]
     assert _metrics(api, job["id"])["stream"]["kind"] == "cdc"
 
 
 def test_mongodb_cdc_mirror(api, sa) -> None:
-    cid = _conn(api, sa, "mongodb", {"host": "src-mongo", "database": "catalog", "username": "dev", "replica_set": "rs0"},
-                {"password": "devsource"})  # fmt: skip
+    cid = _conn(
+        api,
+        sa,
+        "mongodb",
+        {"host": "src-mongo", "database": "catalog", "username": "dev", "replica_set": "rs0"},
+        {"password": "devsource"},
+    )
     ds = _uniq("cdc_reviews")
     _stream(api, cid, "reviews", ds, write_mode="mirror")
     wait(lambda: len(_rows(api, ds)) >= 100, timeout=120, what="mongo snapshot")
     rid = 9000 + int(uuid.uuid4().int % 999)
-    compose("exec", "-T", "src-mongo", "mongosh", "-u", "dev", "-p", "devsource", "--authenticationDatabase", "admin",
-            "--quiet", "catalog", "--eval",
-            f"db.reviews.insertOne({{review_id: {rid}, stars: 5, text: 'fresh'}}); db.reviews.deleteOne({{review_id: 1}})")  # fmt: skip
+    compose(
+        "exec",
+        "-T",
+        "src-mongo",
+        "mongosh",
+        "-u",
+        "dev",
+        "-p",
+        "devsource",
+        "--authenticationDatabase",
+        "admin",
+        "--quiet",
+        "catalog",
+        "--eval",
+        f"db.reviews.insertOne({{review_id: {rid}, stars: 5, text: 'fresh'}}); db.reviews.deleteOne({{review_id: 1}})",
+    )
 
     def applied():
         rows = _rows(api, ds)
@@ -223,8 +265,23 @@ def test_sqlserver_cdc(api, sa) -> None:
     ds = _uniq("cdc_suppliers")
     _stream(api, cid, "dbo.suppliers", ds)
     wait(lambda: len(_rows(api, ds)) >= 30, timeout=180, what="sql server snapshot")
-    compose("exec", "-T", "src-mssql", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S", "localhost", "-U", "sa", "-P",
-            "Dev-Source-2026", "-d", "erp", "-Q", "insert into dbo.suppliers values (999, 'Late', 'NO', 4.2)")  # fmt: skip
+    compose(
+        "exec",
+        "-T",
+        "src-mssql",
+        "/opt/mssql-tools18/bin/sqlcmd",
+        "-C",
+        "-S",
+        "localhost",
+        "-U",
+        "sa",
+        "-P",
+        "Dev-Source-2026",
+        "-d",
+        "erp",
+        "-Q",
+        "insert into dbo.suppliers values (999, 'Late', 'NO', 4.2)",
+    )
     wait(lambda: any(r["id"] == 999 for r in _rows(api, ds)), timeout=30, what="sql server insert")
 
 
@@ -242,8 +299,12 @@ def test_webhook_stream(api) -> None:
     r = httpx.post(url, json=[{"order": i, "total": i * 2.5} for i in range(25)], headers={"X-API-Key": key})
     assert r.status_code == 202 and r.json() == {"accepted": 25}
     # Through the console's nginx too (same origin as the UI).
-    assert httpx.post(f"http://127.0.0.1:3000/ingest/events/{name}", json={"order": 99, "total": 1.0},
-                      headers={"X-API-Key": key}).status_code == 202  # fmt: skip
+    assert (
+        httpx.post(
+            f"http://127.0.0.1:3000/ingest/events/{name}", json={"order": 99, "total": 1.0}, headers={"X-API-Key": key}
+        ).status_code
+        == 202
+    )
     rows = wait(lambda: len(r := _rows(api, ds)) >= 26 and r, timeout=20, what="webhook events in bronze")
     assert {row["order"] for row in rows} == set(range(25)) | {99}
     assert key not in compose("logs", "--no-color", "api", "stream-worker")
@@ -293,41 +354,83 @@ def test_file_arrival_trigger(api) -> None:
     (landing / folder).mkdir(parents=True)
     cid = _conn(api, "", "local_files", {"base_path": "/data/landing"})
     ds = _uniq("arrivals")
-    r = api.post("/api/ingestion/jobs", json={"name": f"it_{ds}", "connection_id": cid, "spec": {
-        "source": {"path_template": f"/{folder}/*.csv"}, "load_mode": "incremental",
-        "target": {"layer": "bronze", "dataset": ds}, "schedule": {"type": "file_arrival", "poll_seconds": 10}}})  # fmt: skip
+    r = api.post(
+        "/api/ingestion/jobs",
+        json={
+            "name": f"it_{ds}",
+            "connection_id": cid,
+            "spec": {
+                "source": {"path_template": f"/{folder}/*.csv"},
+                "load_mode": "incremental",
+                "target": {"layer": "bronze", "dataset": ds},
+                "schedule": {"type": "file_arrival", "poll_seconds": 10},
+            },
+        },
+    )
     assert r.status_code == 201, r.text
     job = r.json()
     time.sleep(12)  # nothing there yet: no run
     assert api.get("/api/ingestion/runs", params={"job_id": job["id"]}).json() == []
     (landing / folder / "a.csv").write_text("id,v\n1,x\n2,y\n")
-    run = wait(lambda: (r := api.get("/api/ingestion/runs", params={"job_id": job["id"]}).json()) and r[0]["status"] == "succeeded" and r[0],
-               timeout=60, every=2, what="file-arrival run")  # fmt: skip
+    run = wait(
+        lambda: (
+            (r := api.get("/api/ingestion/runs", params={"job_id": job["id"]}).json())
+            and r[0]["status"] == "succeeded"
+            and r[0]
+        ),
+        timeout=60,
+        every=2,
+        what="file-arrival run",
+    )
     assert run["trigger"] == "file_arrival" and run["rows_written"] == 2
 
 
 def test_freshness_sla_alert_opens_and_resolves(api) -> None:
     cid = _conn(api, "", "local_files", {"base_path": "/data/landing"})
     ds = _uniq("sla_customers")
-    job = api.post("/api/ingestion/jobs", json={"name": f"it_{ds}", "connection_id": cid, "spec": {
-        "source": {"path_template": "/customers/*.csv"}, "target": {"layer": "bronze", "dataset": ds}}}).json()  # fmt: skip
+    job = api.post(
+        "/api/ingestion/jobs",
+        json={
+            "name": f"it_{ds}",
+            "connection_id": cid,
+            "spec": {"source": {"path_template": "/customers/*.csv"}, "target": {"layer": "bronze", "dataset": ds}},
+        },
+    ).json()
     task = api.post(f"/api/ingestion/jobs/{job['id']}/run").json()["task_id"]
     from tests.integration.conftest import wait_for_job
 
     wait_for_job(api, task)
     dataset = next(d for d in api.get("/api/catalog/datasets", params={"q": ds}).json() if d["name"] == ds)
     # Make it stale: pretend the last load was two hours ago, with a one-hour SLA.
-    compose("exec", "-T", "postgres", "psql", "-U", "postgres", "-d", "dataplat", "-qc",
-            f"update datasets set last_loaded_at = now() - interval '2 hours' where id = '{dataset['id']}'")  # fmt: skip
+    compose(
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "dataplat",
+        "-qc",
+        f"update datasets set last_loaded_at = now() - interval '2 hours' where id = '{dataset['id']}'",
+    )
     assert api.patch(f"/api/catalog/datasets/{dataset['id']}", json={"freshness_sla_minutes": 60}).status_code == 200
     target = f"bronze.{ds}"
-    alert = wait(lambda: next((a for a in api.get("/api/alerts").json() if a["target"] == target), None),
-                 timeout=90, every=3, what="freshness alert")  # fmt: skip
+    alert = wait(
+        lambda: next((a for a in api.get("/api/alerts").json() if a["target"] == target), None),
+        timeout=90,
+        every=3,
+        what="freshness alert",
+    )
     assert alert["kind"] == "freshness" and "stale" in alert["message"]
     task = api.post(f"/api/ingestion/jobs/{job['id']}/run").json()["task_id"]
     wait_for_job(api, task)
-    wait(lambda: not any(a["target"] == target for a in api.get("/api/alerts").json()), timeout=90, every=3,
-         what="alert resolved after a fresh load")  # fmt: skip
+    wait(
+        lambda: not any(a["target"] == target for a in api.get("/api/alerts").json()),
+        timeout=90,
+        every=3,
+        what="alert resolved after a fresh load",
+    )
 
 
 def test_deleting_a_postgres_cdc_job_drops_its_replication_slot(api, sa) -> None:

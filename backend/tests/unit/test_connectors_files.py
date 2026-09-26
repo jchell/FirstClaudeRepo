@@ -133,3 +133,11 @@ def test_secret_fields_must_be_vault_references() -> None:
     c = PostgresConnector({"host": "h", "database": "d", "username": "u", "password": "plain"})
     with pytest.raises(ConnectorError, match="vault://"):
         c.url()
+
+
+def test_normalize_keeps_fields_missing_from_the_first_record() -> None:
+    from dataplat.connectors.files import normalize_records
+
+    table = pa.Table.from_pylist(normalize_records([{"a": 1}, {"a": 2, "b": {"x": 1}}, {"c": True}]))
+    assert table.column_names == ["a", "b", "c"]
+    assert table.column("b").to_pylist() == [None, '{"x": 1}', None]

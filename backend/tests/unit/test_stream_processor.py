@@ -23,5 +23,7 @@ def test_latest_change_per_key_wins_within_a_batch() -> None:
     t = pa.table({"id": [1, 2, 1, 3, 2], "v": ["a", "b", "a2", "c", "b2"]})
     out = r._latest_per_key(t)
     assert sorted(zip(out.column("id").to_pylist(), out.column("v").to_pylist(), strict=True)) == [
-        (1, "a2"), (2, "b2"), (3, "c"),
-    ]  # fmt: skip
+        (1, "a2"),
+        (2, "b2"),
+        (3, "c"),
+    ]

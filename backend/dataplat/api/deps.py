@@ -18,6 +18,12 @@ def get_ctx(request: Request) -> PlatformContext:
 
 
 def get_session(ctx: PlatformContext = Depends(get_ctx)) -> Iterator[Session]:
+    """Request-scoped DB session, committed when the endpoint returns.
+
+    Always depend on it with ``scope="function"``: the default ("request") commits only
+    after the response is sent, so a fast client could act on a row that isn't
+    committed yet (e.g. run a job it has just created and get a 404).
+    """
     with ctx.metadata.session() as s:
         yield s
 

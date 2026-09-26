@@ -97,6 +97,20 @@ def test_postgres_table_job_incremental(api, sa) -> None:
     )
     assert len(preview["result"]["rows"]) == 20
 
+    source_rows = int(
+        compose(
+            "exec",
+            "-T",
+            "src-postgres",
+            "psql",
+            "-U",
+            "dev",
+            "-d",
+            "sales",
+            "-Atc",
+            "select count(*) from crm.customers",
+        )
+    )
     ds = _uniq("crm_customers")
     job, run = _ingest(
         api,
@@ -108,14 +122,27 @@ def test_postgres_table_job_incremental(api, sa) -> None:
             "target": {"layer": "bronze", "dataset": ds},
         },
     )
-    assert run["rows_written"] == 60
+    assert run["rows_written"] == source_rows
     detail = _dataset(api, ds)
-    assert detail["row_count"] == 60 and detail["profile"]["row_count"] == 60
+    assert detail["row_count"] == source_rows and detail["profile"]["row_count"] == source_rows
     email = next(c for c in detail["profile"]["columns"] if c["name"] == "email")
     assert email["patterns"]["email"] == 100.0  # feeds PII suggestions in Phase 3
 
     # New and changed source rows arrive on the next run; nothing else is re-read.
     later = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    new_id = 100_000 + int(uuid.uuid4().int % 100_000)
+    existing = compose(
+        "exec",
+        "-T",
+        "src-postgres",
+        "psql",
+        "-U",
+        "dev",
+        "-d",
+        "sales",
+        "-Atc",
+        "select min(id) from crm.customers where id > 10",
+    ).strip()
     compose(
         "exec",
         "-T",
@@ -126,14 +153,26 @@ def test_postgres_table_job_incremental(api, sa) -> None:
         "-d",
         "sales",
         "-c",
-        f"insert into crm.customers values (1000,'New','Row','new@example.com','+47 1','Oslo','NO','{later}');"
-        f"update crm.customers set city='Bergen', updated_at='{later}' where id=5",
+        f"insert into crm.customers values ({new_id},'New','Row','new@example.com','+47 1','Oslo','NO','{later}');"
+        f"update crm.customers set city='Bergen', updated_at='{later}' where id={existing}",
     )
     task = api.post(f"/api/ingestion/jobs/{job['id']}/run").json()["task_id"]
     assert wait_for_job(api, task)["status"] == "succeeded"
     second = api.get("/api/ingestion/runs", params={"job_id": job["id"], "limit": 1}).json()[0]
     assert second["rows_written"] == 2
-    assert _dataset(api, ds)["row_count"] == 62
+    assert _dataset(api, ds)["row_count"] == source_rows + 2
+    compose(
+        "exec",
+        "-T",
+        "src-postgres",
+        "psql",
+        "-U",
+        "dev",
+        "-d",
+        "sales",
+        "-c",
+        f"delete from crm.customers where id={new_id}",
+    )
 
 
 def test_sftp_file_template_job(api, sa) -> None:
@@ -177,7 +216,19 @@ def test_mysql(api, sa) -> None:
             "target": {"layer": "bronze", "dataset": _uniq("shop_products")},
         },
     )
-    assert 0 < run["rows_written"] <= 80
+    in_stock = compose(
+        "exec",
+        "-T",
+        "src-mysql",
+        "mysql",
+        "-udev",
+        "-pdevsource",
+        "shop",
+        "-N",
+        "-e",
+        "select count(*) from products where stock > 0",
+    )
+    assert run["rows_written"] == int(in_stock.strip().splitlines()[-1])
 
 
 @pytest.mark.skipif(not os.environ.get("DATAPLAT_TEST_MSSQL"), reason="mssql profile not running")
@@ -212,7 +263,23 @@ def test_mongodb(api, sa) -> None:
             "target": {"layer": "bronze", "dataset": ds},
         },
     )
-    assert run["rows_written"] == 100
+    docs = compose(
+        "exec",
+        "-T",
+        "src-mongo",
+        "mongosh",
+        "-u",
+        "dev",
+        "-p",
+        DEV_PW,
+        "--authenticationDatabase",
+        "admin",
+        "--quiet",
+        "catalog",
+        "--eval",
+        "db.reviews.countDocuments()",
+    )
+    assert run["rows_written"] == int(docs.strip().splitlines()[-1])
     cols = {c["name"]: c["data_type"] for c in _dataset(api, ds)["column_list"]}
     assert cols["author"] == "string"  # nested documents land as JSON text
 

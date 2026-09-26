@@ -148,13 +148,13 @@ def _apply(
 
 
 @router.get("/connections", response_model=list[ConnectionOut])
-def list_connections(s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def list_connections(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     return [_out(c) for c in s.scalars(select(Connection).order_by(Connection.name))]
 
 
 @router.get("/connections/{connection_id}", response_model=ConnectionOut)
 def get_connection(
-    connection_id: uuid.UUID, s: Session = Depends(get_session), _: Principal = Depends(current_principal)
+    connection_id: uuid.UUID, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
 ):
     c = s.get(Connection, connection_id)
     if c is None:
@@ -166,7 +166,7 @@ def get_connection(
 def create_connection(
     body: ConnectionIn,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -213,7 +213,7 @@ def update_connection(
     connection_id: uuid.UUID,
     body: ConnectionUpdate,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -254,7 +254,7 @@ def update_connection(
 def delete_connection(
     connection_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -306,7 +306,7 @@ def _enqueue(ctx: PlatformContext, s: Session, connection_id: uuid.UUID, kind: s
 @router.post("/connections/{connection_id}/test", response_model=TaskOut, status_code=202)
 def test_connection(
     connection_id: uuid.UUID,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     _: Principal = Depends(engineer),
 ):
@@ -317,7 +317,7 @@ def test_connection(
 def discover(
     connection_id: uuid.UUID,
     body: DiscoverIn,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     _: Principal = Depends(engineer),
 ):
@@ -328,7 +328,7 @@ def discover(
 def preview(
     connection_id: uuid.UUID,
     body: PreviewIn,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     _: Principal = Depends(engineer),
 ):
@@ -339,7 +339,7 @@ SOURCE_TASKS = {"connection.test", "connection.discover", "connection.preview"}
 
 
 @router.get("/tasks/{task_id}", response_model=TaskOut)
-def get_task(task_id: int, s: Session = Depends(get_session), _: Principal = Depends(engineer)):
+def get_task(task_id: int, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(engineer)):
     row = s.get(JobRow, task_id)
     if row is None or row.kind not in SOURCE_TASKS:
         raise HTTPException(404, "task not found")

@@ -183,7 +183,8 @@ def cdc_cleanup(ctx: PlatformContext, job: Job, secrets: SecretStore | None) -> 
         with c.engine.connect() as conn:
             dropped = conn.execute(
                 text(
-                    "select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = :s and not active"
+                    "select pg_drop_replication_slot(slot_name) from pg_replication_slots"
+                    " where slot_name = :s and not active"
                 ),
                 {"s": slot},
             ).rowcount

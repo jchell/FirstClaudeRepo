@@ -99,7 +99,7 @@ def _streams(s: Session) -> list[StreamOut]:
 
 
 @router.get("/api/streams", response_model=list[StreamOut])
-def list_streams(s: Session = Depends(get_session), _: Principal = Depends(current_principal)):
+def list_streams(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)):
     return _streams(s)
 
 
@@ -112,7 +112,7 @@ def _job(s: Session, job_id: uuid.UUID) -> IngestionJob:
 
 @router.get("/api/streams/{job_id}/metrics")
 def stream_metrics(
-    job_id: uuid.UUID, minutes: int = 60, s: Session = Depends(get_session), _: Principal = Depends(current_principal)
+    job_id: uuid.UUID, minutes: int = 60, s: Session = Depends(get_session, scope="function"), _: Principal = Depends(current_principal)
 ) -> dict[str, Any]:
     """Current lag and latency plus a per-minute series (records, dead letters, latency, lag)."""
     job = _job(s, job_id)
@@ -159,7 +159,7 @@ def _control(ctx: PlatformContext, s: Session, job: IngestionJob, desired: str) 
 def pause(
     job_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -174,7 +174,7 @@ def pause(
 def resume(
     job_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ):
@@ -189,7 +189,7 @@ def resume(
 def resnapshot(
     job_id: uuid.UUID,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(engineer),
 ) -> dict[str, str]:
@@ -209,7 +209,7 @@ def resnapshot(
 def dead_letters(
     job_id: uuid.UUID,
     limit: int = 20,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     _: Principal = Depends(engineer),
 ) -> list[dict[str, Any]]:
@@ -289,7 +289,7 @@ class WebhookKeyOut(BaseModel):
 
 @router.post("/api/connections/{connection_id}/webhook-key", response_model=WebhookKeyOut)
 def new_webhook_key(
-    connection_id: uuid.UUID, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(engineer)
+    connection_id: uuid.UUID, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(engineer)
 ):
     conn = s.get(Connection, connection_id)
     if conn is None or conn.type != "webhook":
@@ -371,7 +371,7 @@ class AlertOut(BaseModel):
 def list_alerts(
     open_only: bool = True,
     limit: int = 100,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     _: Principal = Depends(current_principal),
 ):
     q = select(Alert).order_by(Alert.opened_at.desc()).limit(min(max(limit, 1), 500))
@@ -381,7 +381,7 @@ def list_alerts(
 
 
 @router.post("/api/alerts/{alert_id}/resolve", response_model=AlertOut)
-def resolve(alert_id: int, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(engineer)):
+def resolve(alert_id: int, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(engineer)):
     a = s.get(Alert, alert_id)
     if a is None:
         raise HTTPException(404, "alert not found")

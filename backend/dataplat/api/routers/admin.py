@@ -111,20 +111,20 @@ def _check_roles(s: Session, roles: list[str]) -> None:
 
 @router.get("/roles", response_model=list[RoleOut])
 def list_roles(
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     _: Principal = Depends(require_roles("admin", "viewer", "engineer", "steward", "analyst")),
 ):
     return [RoleOut(name=r.name, description=r.description) for r in s.scalars(select(Role).order_by(Role.name))]
 
 
 @router.get("/users", response_model=list[UserOut])
-def list_users(s: Session = Depends(get_session), _: Principal = Depends(admin_only)):
+def list_users(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(admin_only)):
     return [_user_out(s, u) for u in s.scalars(select(User).order_by(User.username))]
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
 def create_user(
-    body: UserCreate, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(admin_only)
+    body: UserCreate, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(admin_only)
 ):
     _check_roles(s, body.roles)
     user = User(
@@ -157,7 +157,7 @@ def update_user(
     user_id: uuid.UUID,
     body: UserUpdate,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(admin_only),
 ):
@@ -249,13 +249,13 @@ def _set_group(s: Session, g: Group, body: GroupIn) -> None:
 
 
 @router.get("/groups", response_model=list[GroupOut])
-def list_groups(s: Session = Depends(get_session), _: Principal = Depends(admin_only)):
+def list_groups(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(admin_only)):
     return [_group_out(s, g) for g in s.scalars(select(Group).order_by(Group.name))]
 
 
 @router.post("/groups", response_model=GroupOut, status_code=201)
 def create_group(
-    body: GroupIn, request: Request, s: Session = Depends(get_session), actor: Principal = Depends(admin_only)
+    body: GroupIn, request: Request, s: Session = Depends(get_session, scope="function"), actor: Principal = Depends(admin_only)
 ):
     g = Group(name=body.name, description=body.description)
     s.add(g)
@@ -274,7 +274,7 @@ def update_group(
     group_id: uuid.UUID,
     body: GroupIn,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     actor: Principal = Depends(admin_only),
 ):
     g = s.get(Group, group_id)
@@ -331,7 +331,7 @@ def _sa_out(row: ServiceAccount) -> ServiceAccountOut:
 
 
 @router.get("/service-accounts", response_model=list[ServiceAccountOut])
-def list_service_accounts(s: Session = Depends(get_session), _: Principal = Depends(require_roles("engineer"))):
+def list_service_accounts(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(require_roles("engineer"))):
     return [_sa_out(r) for r in s.scalars(select(ServiceAccount).order_by(ServiceAccount.name))]
 
 
@@ -339,7 +339,7 @@ def list_service_accounts(s: Session = Depends(get_session), _: Principal = Depe
 def create_service_account(
     body: ServiceAccountIn,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(admin_only),
 ):
@@ -370,7 +370,7 @@ def create_service_account(
 def delete_service_account(
     name: str,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(admin_only),
 ):
@@ -401,7 +401,7 @@ def write_service_account_secret(
     body: SecretWrite,
     request: Request,
     secret: str = PathParam(pattern=_SECRET_NAME),
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(admin_only),
 ):
@@ -426,7 +426,7 @@ def write_service_account_secret(
 @router.get("/service-accounts/{name}/secrets", response_model=list[SecretMetadataOut])
 def list_service_account_secrets(
     name: str,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     _: Principal = Depends(admin_only),
 ):
@@ -449,7 +449,7 @@ def delete_service_account_secret(
     name: str,
     request: Request,
     secret: str = PathParam(pattern=_SECRET_NAME),
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     ctx: PlatformContext = Depends(get_ctx),
     actor: Principal = Depends(admin_only),
 ):
@@ -477,7 +477,7 @@ class AuditOut(BaseModel):
 def list_audit(
     limit: int = 100,
     action: str | None = None,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     _: Principal = Depends(admin_only),
 ):
     q = select(AuditLog).order_by(AuditLog.id.desc()).limit(min(max(limit, 1), 1000))
@@ -491,7 +491,7 @@ class SettingIn(BaseModel):
 
 
 @router.get("/settings")
-def list_settings(s: Session = Depends(get_session), _: Principal = Depends(admin_only)) -> dict[str, Any]:
+def list_settings(s: Session = Depends(get_session, scope="function"), _: Principal = Depends(admin_only)) -> dict[str, Any]:
     return {r.key: r.value for r in s.scalars(select(PlatformSetting).order_by(PlatformSetting.key))}
 
 
@@ -500,7 +500,7 @@ def put_setting(
     key: str,
     body: SettingIn,
     request: Request,
-    s: Session = Depends(get_session),
+    s: Session = Depends(get_session, scope="function"),
     actor: Principal = Depends(admin_only),
 ) -> dict[str, Any]:
     from dataplat.core.logging import redact

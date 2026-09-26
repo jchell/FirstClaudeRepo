@@ -48,4 +48,9 @@ def main() -> None:
     import uvicorn
 
     configure_logging()
-    uvicorn.run(create_app(), host="0.0.0.0", port=8000, proxy_headers=True, log_config=None)
+    # The API is reachable only on the compose network and 127.0.0.1, behind the console's
+    # nginx, which overwrites X-Forwarded-For with the real client address; trusting it
+    # gives per-client rate limits and audit IPs instead of the proxy's address.
+    uvicorn.run(
+        create_app(), host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*", log_config=None
+    )
