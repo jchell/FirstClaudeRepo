@@ -76,3 +76,34 @@ def test_wrong_audience_rejected() -> None:
 def test_malformed_rejected(idp: JwtIdentityProvider, junk: str) -> None:
     with pytest.raises(InvalidToken):
         idp.verify_access_token(junk)
+
+
+class _RotatingSigner(LocalEd25519Signer):
+    """Signs with v2 while its cached public keys still only list v1."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kid = "local-v2"
+        self.refreshed = 0
+        self._published = {"local-v1": b"x"}
+
+    def public_keys(self) -> dict[str, bytes]:
+        return dict(self._published)
+
+    def refresh_keys(self) -> None:
+        self.refreshed += 1
+        self._published = super().public_keys()
+
+
+def test_issue_refreshes_keys_once_after_rotation() -> None:
+    signer = _RotatingSigner()
+    idp = JwtIdentityProvider(signer, AuthConfig())
+    token, _ = idp.issue_access_token(P)
+    assert signer.refreshed == 1 and idp.verify_access_token(token) == P
+
+
+def test_issue_gives_up_instead_of_recursing() -> None:
+    signer = _RotatingSigner()
+    signer.refresh_keys = lambda: None  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="not among published keys"):
+        JwtIdentityProvider(signer, AuthConfig()).issue_access_token(P)

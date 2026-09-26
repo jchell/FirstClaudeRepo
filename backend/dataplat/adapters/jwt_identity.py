@@ -45,7 +45,7 @@ class VaultTransitSigner:
         self.key_name = key_name
         self.mount = mount
         self._keys: dict[str, bytes] = {}
-        self._keys_fetched = 0.0
+        self._keys_fetched: float | None = None
         self._lock = threading.Lock()
 
     @classmethod
@@ -66,7 +66,7 @@ class VaultTransitSigner:
 
     def public_keys(self) -> dict[str, bytes]:
         with self._lock:
-            if not self._keys or time.monotonic() - self._keys_fetched > 300:
+            if self._keys_fetched is None or time.monotonic() - self._keys_fetched > 300:
                 resp = self.vault.call(lambda c: c.secrets.transit.read_key(name=self.key_name, mount_point=self.mount))
                 self._keys = {
                     f"{self.key_name}-v{version}": base64.b64decode(info["public_key"])
@@ -77,7 +77,7 @@ class VaultTransitSigner:
 
     def refresh_keys(self) -> None:
         with self._lock:
-            self._keys_fetched = 0.0
+            self._keys_fetched = None
 
 
 class LocalEd25519Signer:
@@ -108,7 +108,7 @@ class JwtIdentityProvider:
         self.signer = signer
         self.cfg = cfg
 
-    def issue_access_token(self, principal: Principal) -> tuple[str, int]:
+    def issue_access_token(self, principal: Principal, _retried: bool = False) -> tuple[str, int]:
         now = int(time.time())
         ttl = self.cfg.access_token_ttl_seconds
         claims = {
@@ -133,10 +133,12 @@ class JwtIdentityProvider:
         signature, signed_kid = self.signer.sign(signing_input.encode())
         if signed_kid != kid:
             # Key rotated between the two calls; reissue with the right header.
+            if _retried:
+                raise RuntimeError(f"signing key id {signed_kid!r} not among published keys")
             refresh = getattr(self.signer, "refresh_keys", None)
             if refresh:
                 refresh()
-            return self.issue_access_token(principal)
+            return self.issue_access_token(principal, _retried=True)
         return f"{signing_input}.{b64url(signature)}", ttl
 
     def verify_access_token(self, token: str) -> Principal:
